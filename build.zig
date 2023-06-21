@@ -39,9 +39,24 @@ pub fn build(b: *std.Build) void {
 
     const run_main_tests = b.addRunArtifact(main_tests);
 
+    const benches = b.addExecutable(.{
+        .name ="stanchion_benches",
+        .root_source_file = .{ .path = "src/bench.zig" },
+        .target = target,
+        // .ReleaseFast is probably too unsafe, so stick with .ReleaseSafe out of an
+        // abundance of caution (for now...)
+        .optimize = .ReleaseSafe,
+    });
+
+    const run_benches = b.addRunArtifact(benches);
+
     // This creates a build step. It will be visible in the `zig build --help` menu,
     // and can be selected like this: `zig build test`
     // This will evaluate the `test` step rather than the default, which is "install".
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&run_main_tests.step);
+
+    // Benchmark build step
+    const bench_step = b.step("bench", "Run benchmarks");
+    bench_step.dependOn(&run_benches.step);
 }
