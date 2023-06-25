@@ -43,9 +43,9 @@ pub fn build(b: *std.Build) void {
         .name ="stanchion_benches",
         .root_source_file = .{ .path = "src/bench.zig" },
         .target = target,
-        // .ReleaseFast is probably too unsafe, so stick with .ReleaseSafe out of an
-        // abundance of caution (for now...)
-        .optimize = .ReleaseSafe,
+        // This may be too aggressive but the speed up is significant for scanning the
+        // message log (3-5x improvement on my machine)
+        .optimize = .ReleaseFast,
     });
 
     const run_benches = b.addRunArtifact(benches);

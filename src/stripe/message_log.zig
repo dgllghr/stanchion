@@ -16,11 +16,27 @@ fn MessageLog(
     return struct {
         const Self = @This();
 
-        index: ArrayListUnmanaged(usize),
+        /// Buffer containing the encoded messages in the log
         buf: ArrayListUnmanaged(u8),
+        /// The index of the first byte of data in `buf` _not_ written to the underlying
+        /// blob. Only data appended to `buf` (which is append only) since the last write
+        /// is written on a sync to blob. This is unlike `index_buf`, which is written in
+        /// its entirety on each sync.
         write_end: usize,
+        /// Buffer containing the encoded indexes of the split offsets between messages
+        index_buf: ArrayListUnmanaged(u8),
 
         const Message = struct {
+            /// For some reason, creating the exact slice of the message first and then
+            /// reading out each individual field is faster than slicing from the full
+            /// `buf` of the MessageLog directly and faster than slicing from the start
+            /// of the message in the full `buf` to the end of the full `buf`. There is
+            /// probably an optimization going on that I don't understand but this
+            /// approach is depending on.
+            ///
+            /// TODO figure out why doing it this way is faster and how it relates to
+            ///      using `.ReleaseFast` (no bounds checks) and `.ReleaseSafe` (bounds
+            ///     checks).
             buf: []const u8,
 
             fn op(self: @This()) OpCode {
@@ -37,32 +53,36 @@ fn MessageLog(
             }
         };
 
-        pub fn open(allocator: Allocator, buf: ArrayListUnmanaged(u8)) !Self {
+        pub fn open(
+            buf: ArrayListUnmanaged(u8),
+            index_buf: ArrayListUnmanaged(u8),
+        ) !Self {
             const write_end = buf.items.len;
-            const index = try buildIndex(allocator, buf);
             return .{
-                .index = index,
+                .index_buf = index_buf,
                 .buf = buf,
                 .write_end = write_end,
             };
         }
 
         pub fn deinit(self: *Self, allocator: Allocator) void {
-            self.index.deinit(allocator);
+            self.index_buf.deinit(allocator);
             self.buf.deinit(allocator);
         }
 
         pub fn len(self: Self) usize {
-            return self.index.items.len;
+            return self.index_buf.items.len / 4;
         }
 
         pub fn scan(self: Self, index: *usize) ?Value {
             var message_idx = self.len();
             while (message_idx > 0) {
                 message_idx -= 1;
-                const start = if (message_idx > 0) self.index.items[message_idx - 1] else 0;
-                const end = self.index.items[message_idx];
-                const message = Message { .buf = self.buf.items[start..end] };
+                const message = Message {
+                    .buf = messageSlice(self.buf.items,
+                        self.index_buf.items,
+                        message_idx),
+                };
                 const idx = message.index();
                 switch (message.op()) {
                     .Insert => {
@@ -88,29 +108,18 @@ fn MessageLog(
             return null;
         }
 
-        fn buildIndex(
-            allocator: Allocator,
-            buf: ArrayListUnmanaged(u8),
-        ) !ArrayListUnmanaged(usize) {
-            var index = try ArrayListUnmanaged(usize)
-                .initCapacity(allocator, @divFloor(buf.items.len, 5));
-            var idx: usize = 0;
-            while (idx < buf.items.len) {
-                const op = @intToEnum(OpCode, buf.items[idx]);
-                switch (op) {
-                    .Insert => {
-                        idx += 5 + @sizeOf(Value);
-                    },
-                    .Update => {
-                        idx += 5 + @sizeOf(Value);
-                    },
-                    .Delete => {
-                        idx += 5;
-                    },
-                }
-                index.appendAssumeCapacity(idx);
+        fn messageSlice(buf: []u8, index_buf: []u8, index: usize) []u8 {
+            if (index > 0) {
+                const start_end_slice = @ptrCast(*const [8]u8,
+                    index_buf[(index - 1) * 4..(index + 1) * 4].ptr);
+                const start = std.mem.readIntLittle(u32, start_end_slice[0..4]);
+                const end = std.mem.readIntLittle(u32, start_end_slice[4..8]);
+                return buf[start..end];
             }
-            return index;
+            const end_slice =
+                @ptrCast(*const [4]u8, index_buf[index * 4..(index + 1) * 4].ptr);
+            const end = std.mem.readIntLittle(u32, end_slice);
+            return buf[0..end];
         }
     };
 }
@@ -123,14 +132,20 @@ pub fn benchScanMessageLog() !void {
     const allocator = std.heap.page_allocator;
 
     var messages_buf = std.ArrayListUnmanaged(u8){};
+    var index_buf = std.ArrayListUnmanaged(u8){};
+    var index_entry: [4]u8 = undefined;
     var rnd = RndGen.init(77_777);
     for (0..messages_len) |_| {
         try writeRandomMessage(allocator, &messages_buf, &rnd, messages_len);
+        std.mem.writeIntLittle(u32,
+            index_entry[0..],
+            @intCast(u32, messages_buf.items.len));
+        try index_buf.appendSlice(allocator, index_entry[0..]);
     }
 
     const start_open = std.time.microTimestamp();
     var message_log = try MessageLog(i64, i64FromBytes)
-        .open(allocator, messages_buf);
+        .open(messages_buf, index_buf);
     defer message_log.deinit(allocator);
     const end_open = std.time.microTimestamp();
     std.log.err("Open MessageLog: {d} micros\n", .{ end_open - start_open });
