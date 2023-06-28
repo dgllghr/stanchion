@@ -11,8 +11,6 @@ pub const Decoder = struct {
     current_word_index: ?usize,
     current_word: Word,
 
-    const Value = bool;
-
     pub fn init(_: anytype) !Self {
         return .{
             .current_word_index = null,
@@ -27,7 +25,7 @@ pub const Decoder = struct {
             try self.loadWord(blob, word_index);
         }
 
-        const bit_index = @intCast(u5, index % @bitSizeOf(Word));
+        const bit_index: u5 = @intCast(index % @bitSizeOf(Word));
         return (self.current_word >> bit_index) & 1 > 0;
     }
 

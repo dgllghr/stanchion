@@ -4,15 +4,13 @@ const mem = std.mem;
 const constant = @This();
 
 pub fn Decoder(
-    comptime V: type,
-    comptime fromBytes: fn(*const [@sizeOf(V)]u8) V,
+    comptime Value: type,
+    comptime fromBytes: fn(*const [@sizeOf(Value)]u8) Value,
 ) type {
     return struct {
         const Self = @This();
 
         value: Value,
-
-        const Value = V;
 
         pub fn init(blob: anytype) !Self {
             var buf: [@sizeOf(Value)]u8 = undefined;
