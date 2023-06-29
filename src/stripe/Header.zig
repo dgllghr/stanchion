@@ -1,7 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
 
-const Encoding = @import("./encoding.zig").Encoding;
+const Encoding = @import("../encode.zig").Encoding;
 
 const Self = @This();
 

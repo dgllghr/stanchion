@@ -5,11 +5,11 @@ const ArrayListUnmanaged = std.ArrayListUnmanaged;
 
 const BlobSlice = @import("./blob.zig").BlobSlice;
 const Header = @import("./stripe/Header.zig");
-
-pub const Bool = @import("./stripe/logical_type/bool.zig");
+const MakeMessageLog = @import("./stripe/message_log.zig").MessageLog;
 
 pub fn Stripe(comptime Blob: type, comptime LogicalType: type) type {
-    const MessageLog = LogicalType.MessageLog;
+    const MessageLog = MakeMessageLog(
+        LogicalType.Value, LogicalType.readDirect, LogicalType.writeDirect);
     const Value = LogicalType.Value;
 
     return struct {
@@ -69,6 +69,7 @@ pub fn Stripe(comptime Blob: type, comptime LogicalType: type) type {
 }
 
 const MemoryBlob = @import("./blob.zig").MemoryBlob;
+const Bool = @import("./logical_type/bool.zig");
 
 test "read" {
     const allocator = std.testing.allocator;

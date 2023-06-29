@@ -1,13 +1,4 @@
 const std = @import("std");
-const Int = std.builtin.Type.Int;
-
-pub const InvalidEncodingError = error{InvalidEncoding};
-
-pub const Encoding = enum(u8) {
-    Direct = 1,
-    Constant = 2,
-    BitPacked = 3,
-};
 
 pub fn makeChooser(
     comptime Value: type,
