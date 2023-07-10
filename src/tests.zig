@@ -5,4 +5,6 @@ comptime {
 
     _ = @import("./stripe/message_log.zig");
     _ = @import("./stripe.zig");
+
+    _ = @import("./schema/SchemaDef.zig");
 }
