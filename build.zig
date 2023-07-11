@@ -67,6 +67,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    main_tests.addCSourceFile("src/sqlite3/c/sqlite3.c", &[_][]const u8{"-std=c99"});
+    main_tests.addIncludePath("src/sqlite3/c");
     const main_tests_options = b.addOptions();
     main_tests.addOptions("build_options", main_tests_options);
     main_tests_options.addOption(bool, "loadable_extension", false);

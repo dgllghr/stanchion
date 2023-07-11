@@ -1,4 +1,6 @@
 comptime {
+    _ = @import("./sqlite3/tests.zig");
+
     _ = @import("./encode/bit_packed_bool.zig");
     _ = @import("./encode/constant.zig");
     _ = @import("./encode/chooser.zig");
