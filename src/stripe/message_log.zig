@@ -1,5 +1,6 @@
 const std = @import("std");
 const mem = std.mem;
+const meta = std.meta;
 const Allocator = std.mem.Allocator;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 
@@ -168,23 +169,24 @@ pub fn MessageLog(
         pub fn logMessage(
             self: *Self,
             allocator: Allocator,
-            message: Message,
+            comptime op: meta.Tag(Message),
+            message: meta.TagPayload(Message, op),
         ) !void {
             var idx_buf: [4]u8 = undefined;
 
-            switch (message) {
-                .Delete => |m| {
+            switch (op) {
+                .Delete => {
                     try self.buf.ensureUnusedCapacity(allocator, 5);
                     self.buf.appendAssumeCapacity(@intFromEnum(OpCode.Delete));
-                    mem.writeIntLittle(u32, idx_buf[0..], m.index);
+                    mem.writeIntLittle(u32, idx_buf[0..], message.index);
                     self.buf.appendSliceAssumeCapacity(idx_buf[0..]);
                 },
-                inline else => |m, tag| {
+                inline else => {
                     try self.buf.ensureUnusedCapacity(allocator, 5 + @sizeOf(Value));
-                    self.buf.appendAssumeCapacity(@intFromEnum(tag));
-                    mem.writeIntLittle(u32, idx_buf[0..], m.index);
+                    self.buf.appendAssumeCapacity(@intFromEnum(op));
+                    mem.writeIntLittle(u32, idx_buf[0..], message.index);
                     self.buf.appendSliceAssumeCapacity(idx_buf[0..]);
-                    self.buf.appendSliceAssumeCapacity(&toBytes(m.value));
+                    self.buf.appendSliceAssumeCapacity(&toBytes(message.value));
                 },
             }
 
@@ -218,10 +220,10 @@ test "log insert" {
         .init(messages_buf, index_buf);
     defer mlog.deinit(allocator);
     
-    try mlog.logMessage(allocator, .{ .Insert = .{ .index = 5, .value = -17 } });
-    try mlog.logMessage(allocator, .{ .Insert = .{ .index = 3, .value = 100 } });
-    try mlog.logMessage(allocator, .{ .Insert = .{ .index = 7, .value = 66 } });
-    try mlog.logMessage(allocator, .{ .Insert = .{ .index = 1, .value = 3000 } });
+    try mlog.logMessage(allocator, .Insert, .{ .index = 5, .value = -17 });
+    try mlog.logMessage(allocator, .Insert, .{ .index = 3, .value = 100 });
+    try mlog.logMessage(allocator, .Insert, .{ .index = 7, .value = 66 });
+    try mlog.logMessage(allocator, .Insert, .{ .index = 1, .value = 3000 });
 }
 
 const MemoryBlob = @import("../blob.zig").MemoryBlob;
@@ -232,10 +234,10 @@ test "serialize round trip" {
     var mlog = MessageLog(i64, i64FromBytes, i64ToBytes).empty();
     defer mlog.deinit(allocator);
 
-    try mlog.logMessage(allocator, .{ .Insert = .{ .index = 5, .value = -17 } });
-    try mlog.logMessage(allocator, .{ .Update = .{ .index = 3, .value = 2000 } });
-    try mlog.logMessage(allocator, .{ .Delete = .{ .index = 0 } });
-    try mlog.logMessage(allocator, .{ .Update = .{ .index = 7, .value = -1 } });
+    try mlog.logMessage(allocator, .Insert, .{ .index = 5, .value = -17 });
+    try mlog.logMessage(allocator, .Update, .{ .index = 3, .value = 2000 });
+    try mlog.logMessage(allocator, .Delete, .{ .index = 0 });
+    try mlog.logMessage(allocator, .Update, .{ .index = 7, .value = -1 });
 
     var header = Header {
         .encoding = .Direct,

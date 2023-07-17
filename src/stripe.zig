@@ -49,20 +49,20 @@ pub fn Stripe(comptime Blob: type, comptime LogicalType: type) type {
         }
 
         pub fn insert(self: *Self, allocator: Allocator, index: u32, value: Value) !void {
-            try self.message_log.logMessage(allocator, .{
-                .Insert = .{ .index = index, .value = value }
+            try self.message_log.logMessage(allocator, .Insert, .{
+                .index = index, .value = value
             });
         }
 
         pub fn update(self: *Self, allocator: Allocator, index: u32, value: Value) !void {
-            try self.message_log.logMessage(allocator, .{
-                .Update = .{ .index = index, .value = value }
+            try self.message_log.logMessage(allocator, .Update, .{
+                .index = index, .value = value
             });
         }
 
         pub fn delete(self: *Self, allocator: Allocator, index: u32) !void {
-            try self.message_log.logMessage(allocator, .{
-                .Delete = .{ .index = index }
+            try self.message_log.logMessage(allocator, .Delete, .{
+                .index = index
             });
         }
     };

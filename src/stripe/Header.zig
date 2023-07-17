@@ -6,7 +6,7 @@ const Encoding = @import("../encode.zig").Encoding;
 const Self = @This();
 
 encoding: Encoding,
-/// Byte length of the message log messages
+/// Byte length of encoded values
 values_len: u32,
 /// Byte length of the message log messages
 message_log_messages_len: u32,
