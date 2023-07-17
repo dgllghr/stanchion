@@ -119,6 +119,10 @@ fn parseDataType(r: *Reader) !ColumnType.DataType {
         return ColumnType.DataType.Integer;
     } else |_| if (consumeMatchFloatType(r)) {
         return ColumnType.DataType.Float;
+    } else |_| if (consumeMatchBlobType(r)) {
+        return ColumnType.DataType.Blob;
+    } else |_| if (consumeMatchTextType(r)) {
+        return ColumnType.DataType.Blob;
     } else |_| {
         return ParseError.InvalidDataType;
     }
@@ -203,6 +207,26 @@ fn consumeMatchFloatType(r: *Reader) !void {
         try consumeMatchAny(r, &[_]u8{ 'A', 'a' });
         try consumeMatchAny(r, &[_]u8{ 'L', 'l' });
     }
+}
+
+fn consumeMatchBlobType(r: *Reader) !void {
+    const start = r.position;
+    errdefer r.position = start;
+
+    try consumeMatchAny(r, &[_]u8{ 'B', 'b' });
+    try consumeMatchAny(r, &[_]u8{ 'L', 'l' });
+    try consumeMatchAny(r, &[_]u8{ 'O', 'o' });
+    try consumeMatchAny(r, &[_]u8{ 'B', 'b' });
+}
+
+fn consumeMatchTextType(r: *Reader) !void {
+    const start = r.position;
+    errdefer r.position = start;
+
+    try consumeMatchAny(r, &[_]u8{ 'T', 't' });
+    try consumeMatchAny(r, &[_]u8{ 'E', 'e' });
+    try consumeMatchAny(r, &[_]u8{ 'X', 'x' });
+    try consumeMatchAny(r, &[_]u8{ 'T', 't' });
 }
 
 fn parseSortKeyColumns(

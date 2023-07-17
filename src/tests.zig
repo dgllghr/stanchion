@@ -8,5 +8,7 @@ comptime {
     _ = @import("./stripe/message_log.zig");
     _ = @import("./stripe.zig");
 
+    _ = @import("./schema/db.zig");
     _ = @import("./schema/SchemaDef.zig");
+    _ = @import("./schema/Schema.zig");
 }
