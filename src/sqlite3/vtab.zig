@@ -9,13 +9,15 @@ const testing = std.testing;
 const c = @import("c.zig").c;
 const versionGreaterThanOrEqualTo = @import("c.zig").versionGreaterThanOrEqualTo;
 
+const Conn = @import("./Conn.zig");
+
 /// CallbackContext is only valid for the duration of a callback from sqlite into the
 /// virtual table instance. It should no tbe saved between calls, and it is provided to
 /// every function.
 pub const CallbackContext = struct {
     const Self = @This();
 
-    allocator: *heap.ArenaAllocator,
+    arena: *heap.ArenaAllocator,
     error_message: []const u8 = "unknown error",
 
     pub fn setErrorMessage(
@@ -24,7 +26,7 @@ pub const CallbackContext = struct {
         values: anytype,
     ) void {
         self.error_message = fmt.allocPrint(
-            self.allocator.allocator(),
+            self.arena.allocator(),
             format_string,
             values
         ) catch |err| switch (err) {
@@ -412,10 +414,11 @@ pub fn VirtualTable(comptime Table: type) type {
                 err_str.* = dupeToSQLiteString("out of memory");
                 return c.SQLITE_ERROR;
             };
-            var cb_ctx = CallbackContext { .allocator = &arena };
+            var cb_ctx = CallbackContext { .arena = &arena };
+            const conn = Conn.init(db.?);
 
             const initTable = if (create) Table.create else Table.connect;
-            var table = initTable(allocator, db.?, &cb_ctx, args) catch {
+            var table = initTable(allocator, conn, &cb_ctx, args) catch {
                 err_str.* = dupeToSQLiteString(cb_ctx.error_message);
                 return c.SQLITE_ERROR;
             };
@@ -432,7 +435,7 @@ pub fn VirtualTable(comptime Table: type) type {
 
             vtab.* = @ptrCast(state);
 
-            const schema = state.table.schema(arena.allocator()) catch {
+            const schema = state.table.ddl(arena.allocator()) catch {
                 err_str.* = dupeToSQLiteString("out of memory");
                 return c.SQLITE_ERROR;
             };

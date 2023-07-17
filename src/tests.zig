@@ -11,4 +11,6 @@ comptime {
     _ = @import("./schema/db.zig");
     _ = @import("./schema/SchemaDef.zig");
     _ = @import("./schema/Schema.zig");
+
+    _ = @import("./Table.zig");
 }
