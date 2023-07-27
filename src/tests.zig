@@ -13,5 +13,9 @@ comptime {
     _ = @import("./schema/Schema.zig");
 
     _ = @import("./value/owned.zig");
+
+    _ = @import("./row_group.zig").RowGroups;
     _ = @import("./Table.zig");
+
+    
 }

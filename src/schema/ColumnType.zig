@@ -30,6 +30,26 @@ pub const DataType = enum {
         try writer.print("{s}", .{str});
     }
 
+    pub const SqliteFormatter = struct {
+        data_type: DataType,
+
+        pub fn format(
+            self: @This(),
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            const str = switch (self.data_type) {
+                .Boolean => "INTEGER",
+                .Integer => "INTEGER",
+                .Float => "FLOAT",
+                .Text => "TEXT",
+                .Blob => "BLOB",
+            };
+            try writer.print("{s}", .{str});
+        }
+    };
+
     pub fn read(canonical: []const u8) @This() {
         switch (canonical[0]) {
             'B' => {
@@ -65,7 +85,7 @@ pub fn format(
     writer: anytype,
 ) !void {
     const nullable = if (self.nullable) "NULL" else "NOT NULL";
-    try writer.print("{s} {s}", .{self.data_type, nullable});
+    try writer.print("{s} {s}", .{ self.data_type, nullable });
 }
 
 pub fn read(canonical: []const u8) Self {
