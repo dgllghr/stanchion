@@ -40,6 +40,13 @@ pub fn reset(self: Self) !void {
     }
 }
 
+pub fn bindNull(self: Self, index: usize) !void {
+    const res = c.sqlite3_bind_null(self.stmt, @intCast(index));
+    if (res != c.SQLITE_OK) {
+        return errors.errorFromResultCode(res);
+    }
+}
+
 pub fn bind(self: Self, comptime t: SqliteType, index: usize, value: ?t.Type()) !void {
     var res: c_int = 0;
     if (value == null) {
@@ -55,6 +62,13 @@ pub fn bind(self: Self, comptime t: SqliteType, index: usize, value: ?t.Type()) 
             .Blob => c.sqlite3_bind_blob(self.stmt, @intCast(index), @ptrCast(value.?), @intCast(value.?.len), c.SQLITE_STATIC),
         };
     }
+    if (res != c.SQLITE_OK) {
+        return errors.errorFromResultCode(res);
+    }
+}
+
+pub fn bindSqliteValue(self: Self, index: usize, value: ?*const c.sqlite3_value) !void {
+    const res = c.sqlite3_bind_value(self.stmt, @intCast(index), value);
     if (res != c.SQLITE_OK) {
         return errors.errorFromResultCode(res);
     }
