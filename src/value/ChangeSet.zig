@@ -29,7 +29,7 @@ pub fn changeType(self: Self) ChangeType {
 }
 
 pub fn readRowid(self: Self) i64 {
-    const ref = ValueRef {
+    const ref = ValueRef{
         .value = self.values[0],
     };
     return ref.asI64();

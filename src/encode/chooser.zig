@@ -99,24 +99,23 @@ fn EncoderUnion(comptime Validators: type) type {
             .value = idx,
         };
     }
-    const EncoderEnum = @Type(.{
-        .Enum = .{
-            .tag_type = @Type(.{
-                .Int = .{ .signedness = .unsigned, .bits = validator_fields.len, },
-            }),
-            .fields = enum_fields[0..],
-            .decls = &[_]std.builtin.Type.Declaration{},
-            .is_exhaustive = true,
-        }
-    });
-    return @Type(.{
-        .Union = .{
-            .layout = .Auto,
-            .tag_type = EncoderEnum,
-            .fields = union_fields[0..],
-            .decls = &[_]std.builtin.Type.Declaration{},
-        }
-    });
+    const EncoderEnum = @Type(.{ .Enum = .{
+        .tag_type = @Type(.{
+            .Int = .{
+                .signedness = .unsigned,
+                .bits = validator_fields.len,
+            },
+        }),
+        .fields = enum_fields[0..],
+        .decls = &[_]std.builtin.Type.Declaration{},
+        .is_exhaustive = true,
+    } });
+    return @Type(.{ .Union = .{
+        .layout = .Auto,
+        .tag_type = EncoderEnum,
+        .fields = union_fields[0..],
+        .decls = &[_]std.builtin.Type.Declaration{},
+    } });
 }
 
 test "generate union of encoders type for validators type" {

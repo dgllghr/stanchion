@@ -5,7 +5,7 @@ const constant = @This();
 
 pub fn Decoder(
     comptime Value: type,
-    comptime fromBytes: fn(*const [@sizeOf(Value)]u8) Value,
+    comptime fromBytes: fn (*const [@sizeOf(Value)]u8) Value,
 ) type {
     return struct {
         const Self = @This();
@@ -26,7 +26,7 @@ pub fn Decoder(
 
 pub fn Validator(
     comptime Value: type,
-    comptime toBytes: fn(Value) [@sizeOf(Value)]u8,
+    comptime toBytes: fn (Value) [@sizeOf(Value)]u8,
 ) type {
     return struct {
         const Self = @This();
@@ -58,9 +58,9 @@ pub fn Validator(
 
         pub fn finish(self: Self) ?Valid {
             if (self.value) |value| {
-                const encoder = Self.Encoder { .value = value };
+                const encoder = Self.Encoder{ .value = value };
                 return .{
-                    .byte_len =  @sizeOf(Value),
+                    .byte_len = @sizeOf(Value),
                     .encoder = encoder,
                 };
             }
@@ -71,7 +71,7 @@ pub fn Validator(
 
 pub fn Encoder(
     comptime V: type,
-    comptime toBytes: fn(V) [@sizeOf(V)]u8,
+    comptime toBytes: fn (V) [@sizeOf(V)]u8,
 ) type {
     return struct {
         const Self = @This();
@@ -110,7 +110,7 @@ test "decoder" {
     const expected_value: u32 = 17;
     mem.writeIntLittle(u32, buf[0..4], expected_value);
 
-    var blob = TestBlob { .data = buf };
+    var blob = TestBlob{ .data = buf };
     var decoder = try Decoder(u32, readU32).init(blob);
     const value = try decoder.decode(blob, 0);
 
@@ -123,9 +123,9 @@ test "encoder" {
     defer allocator.free(buf);
 
     const expected_value: u32 = 17;
-    var encoder = Encoder(u32, writeU32) { .value =  expected_value };
+    var encoder = Encoder(u32, writeU32){ .value = expected_value };
 
-    var blob = TestBlob { .data = buf };
+    var blob = TestBlob{ .data = buf };
     try encoder.encodeAll(blob, .{});
 
     const value = readU32(blob.data[0..4]);
@@ -158,4 +158,3 @@ fn writeU32(value: u32) [4]u8 {
     mem.writeIntLittle(u32, &buf, value);
     return buf;
 }
-

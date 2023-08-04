@@ -13,10 +13,10 @@ pub const Decoder = union(enum) {
     pub fn init(encoding: Encoding, blob: anytype) !Self {
         return switch (encoding) {
             .Constant => .{
-                .constant = try encode.constant.Decoder(bool, readDirect).init(blob)
+                .constant = try encode.constant.Decoder(bool, readDirect).init(blob),
             },
             .BitPacked => .{
-                .bit_packed = try encode.bit_packed_bool.Decoder.init(blob)
+                .bit_packed = try encode.bit_packed_bool.Decoder.init(blob),
             },
             else => return Error.InvalidEncoding,
         };

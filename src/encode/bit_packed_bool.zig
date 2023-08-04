@@ -113,7 +113,7 @@ test "decoder" {
     const expected_value: u32 = 29;
     mem.writeIntLittle(u32, buf[0..4], expected_value);
 
-    var blob = TestBlob { .data = buf };
+    var blob = TestBlob{ .data = buf };
     var decoder = try Decoder.init(blob);
 
     var value = try decoder.decode(blob, 0);

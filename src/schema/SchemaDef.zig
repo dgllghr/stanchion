@@ -16,7 +16,7 @@ pub const ColumnDef = struct {
     column_type: ColumnType,
 };
 
-pub const ParseError = error {
+pub const ParseError = error{
     NotMatched,
     Eof,
     UnexpectedCharacter,
@@ -52,7 +52,7 @@ test "parse schema definition" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const args = [_][]const u8 {
+    const args = [_][]const u8{
         "foo INTEGER NOT NULL",
         "`bar:2` REAL NULL",
         "baz BOOL NOT NULL",
@@ -100,7 +100,7 @@ fn parseColumnType(r: *Reader) !ColumnType {
         try consumeMatchAny(r, &[_]u8{ 'L', 'l' });
         try consumeMatchAny(r, &[_]u8{ 'L', 'l' });
     }
-    
+
     return .{
         .data_type = data_type,
         .nullable = nullable,
@@ -195,7 +195,7 @@ fn consumeMatchFloatType(r: *Reader) !void {
         return ParseError.Eof;
     }
 
-    if (r.current() == 'F' or r.current() == 'f')  {
+    if (r.current() == 'F' or r.current() == 'f') {
         r.advance();
         try consumeMatchAny(r, &[_]u8{ 'L', 'l' });
         try consumeMatchAny(r, &[_]u8{ 'O', 'o' });
@@ -235,7 +235,7 @@ fn parseSortKeyColumns(
     sk_cols: *ArrayListUnmanaged([]const u8),
 ) !void {
     consumeWhitespace(r);
-    try consumeMatchAny(r, &[_]u8 { '(' });
+    try consumeMatchAny(r, &[_]u8{'('});
 
     const first_col = try parseIdentifier(allocator, r);
     try sk_cols.append(allocator, first_col);
@@ -267,7 +267,7 @@ fn parseSortKeyColumns(
 /// TODO support unicode characters in identifiers
 fn parseIdentifier(allocator: Allocator, r: *Reader) ![]const u8 {
     consumeWhitespace(r);
-    
+
     var end_char: ?u8 = null;
     if (try consumeOpenQuoteChar(r)) |qc| {
         end_char = qc;
@@ -300,7 +300,7 @@ fn parseIdentifier(allocator: Allocator, r: *Reader) ![]const u8 {
     } else {
         while (true) {
             if (r.current() == end_char) {
-                // `[]` quote does not have escapes 
+                // `[]` quote does not have escapes
                 if (end_char == ']') {
                     end = r.position;
                     r.advance();
@@ -436,9 +436,7 @@ fn consumeMatchAny(r: *Reader, comptime chars: []const u8) !void {
     r.advance();
 }
 
-const open_quote_chars = [_]u8 {
-    '"', '[', '`', '\''
-};
+const open_quote_chars = [_]u8{ '"', '[', '`', '\'' };
 
 /// If the current character in the reader is an open quote char, advances the reader and
 /// returns the quote character

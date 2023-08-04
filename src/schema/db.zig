@@ -8,7 +8,7 @@ const Stmt = @import("../sqlite3/Stmt.zig");
 const Column = @import("./Column.zig");
 const ColumnType = @import("./ColumnType.zig");
 
-pub const db_ctx_fields = [_][]const u8 {
+pub const db_ctx_fields = [_][]const u8{
     "create_column_stmt",
     "load_column_stmt",
 };
@@ -29,7 +29,7 @@ pub fn loadColumns(
     }
 
     sort_key_len.* = 0;
-    const stmt  = db_ctx.load_column_stmt.?;
+    const stmt = db_ctx.load_column_stmt.?;
     try stmt.bind(.Int64, 1, table_id);
     while (try stmt.next()) {
         const col = try readColumn(allocator, stmt);
@@ -67,7 +67,7 @@ pub fn createColumn(
         );
     }
 
-    const stmt  = db_ctx.create_column_stmt.?;
+    const stmt = db_ctx.create_column_stmt.?;
     try stmt.bind(.Int64, 1, table_id);
     try stmt.bind(.Int32, 2, column.rank);
     try stmt.bind(.Text, 3, column.name);
@@ -95,9 +95,11 @@ test "create column" {
         \\)
     );
 
-    var db_ctx = DbCtx(&db_ctx_fields) { .conn = conn, };
+    var db_ctx = DbCtx(&db_ctx_fields){
+        .conn = conn,
+    };
 
-    var column = Column {
+    var column = Column{
         .rank = 0,
         .name = "first_col",
         .column_type = .{ .data_type = .Integer, .nullable = false },

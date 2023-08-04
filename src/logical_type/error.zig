@@ -1,3 +1,3 @@
-pub const Error = error {
+pub const Error = error{
     InvalidEncoding,
 };

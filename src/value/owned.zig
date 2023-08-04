@@ -21,7 +21,7 @@ pub const OwnedValue = union(ValueType) {
             .Null, .Integer, .Float => {},
             else => |bytes| allocator.free(bytes),
         }
-    } 
+    }
 
     pub fn valueType(self: Self) ValueType {
         return meta.activeTag(self);

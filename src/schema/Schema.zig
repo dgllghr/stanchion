@@ -14,10 +14,7 @@ const Self = @This();
 columns: ArrayListUnmanaged(Column),
 sort_key: ArrayListUnmanaged(usize),
 
-pub const Error = error {
-    SortKeyColumnNotFound,
-    ExecReturnedData
-};
+pub const Error = error{ SortKeyColumnNotFound, ExecReturnedData };
 
 pub fn create(allocator: Allocator, db_ctx: anytype, table_id: i64, def: SchemaDef) !Self {
     // Find and validate sort keys
@@ -67,7 +64,7 @@ pub fn create(allocator: Allocator, db_ctx: anytype, table_id: i64, def: SchemaD
 
     return .{
         .columns = columns,
-        .sort_key = sort_key,  
+        .sort_key = sort_key,
     };
 }
 

@@ -18,7 +18,7 @@ pub fn open(path: [*c]const u8) !Self {
     if (res != c.SQLITE_OK) {
         return errors.errorFromResultCode(res);
     }
-    return .{.conn = conn.?};
+    return .{ .conn = conn.? };
 }
 
 pub fn openInMemory() !Self {

@@ -29,13 +29,7 @@ pub export fn sqlite3_stanchion_init(
         return c.SQLITE_ERROR;
     };
 
-    const res = c.sqlite3_create_module_v2(
-        db,
-        "stanchion",
-        &StanchionVTab.module,
-        &allocator,
-        null
-    );
+    const res = c.sqlite3_create_module_v2(db, "stanchion", &StanchionVTab.module, &allocator, null);
     if (res != c.SQLITE_OK) {
         err_msg.* = @constCast(@ptrCast("error creating module"));
         return res;
