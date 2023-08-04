@@ -68,7 +68,7 @@ pub const Migrations = struct {
         \\) STRICT
     ;
 
-    const v1 = [_][*:0]const u8 {
+    const v1 = [_][*:0]const u8{
         \\CREATE TABLE _stanchion_tables (
         \\  id INTEGER NOT NULL PRIMARY KEY,
         \\  -- It seems like `collate nocase` is what sqlite uses to compare table names
@@ -86,6 +86,18 @@ pub const Migrations = struct {
         \\  sk_rank INTEGER NULL,
         \\  PRIMARY KEY (table_id, rank)
         \\) STRICT, WITHOUT ROWID
+        ,
+        \\CREATE TABLE _stanchion_stripes (
+        \\  id INTEGER NOT NULL PRIMARY KEY,
+        \\  stripe BLOB NOT NULL            
+        \\) STRICT
+        ,
+        \\CREATE TABLE _stanchion_segments (
+        \\  id INTEGER NOT NULL PRIMARY KEY,
+        \\  present_stripe_id INTEGER NULL,
+        \\  primary_stripe_id INTEGER NULL,
+        \\  secondary_stripe_id INTEGER NULL    
+        \\) STRICT
     };
 
     const migrations = [_][]const [*:0]const u8 {&v1};

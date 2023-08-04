@@ -12,14 +12,14 @@ const OpCode = enum(u8) {
     Delete = 3,
 };
 
-const Error = error {
+const Error = error{
     MessageLogTooLarge,
 };
 
 pub fn MessageLog(
     comptime Value: type,
-    comptime fromBytes: fn(*const [@sizeOf(Value)]u8) Value,
-    comptime toBytes: fn(Value) [@sizeOf(Value)]u8,
+    comptime fromBytes: fn (*const [@sizeOf(Value)]u8) Value,
+    comptime toBytes: fn (Value) [@sizeOf(Value)]u8,
 ) type {
     return struct {
         const Self = @This();
@@ -132,7 +132,7 @@ pub fn MessageLog(
             var message_idx = self.len();
             while (message_idx > 0) {
                 message_idx -= 1;
-                const message = MessageReader {
+                const message = MessageReader{
                     .buf = self.messageSlice(message_idx),
                 };
                 const idx = message.index();
@@ -154,7 +154,7 @@ pub fn MessageLog(
                         if (idx <= index.*) {
                             index.* += 1;
                         }
-                    }
+                    },
                 }
             }
             return null;
@@ -197,14 +197,12 @@ pub fn MessageLog(
 
         fn messageSlice(self: Self, index: usize) []u8 {
             if (index > 0) {
-                const start_end_slice: *const [8]u8 = @ptrCast(
-                    self.index_buf.items[(index - 1) * 4..(index + 1) * 4].ptr);
+                const start_end_slice: *const [8]u8 = @ptrCast(self.index_buf.items[(index - 1) * 4 .. (index + 1) * 4].ptr);
                 const start = mem.readIntLittle(u32, start_end_slice[0..4]);
                 const end = mem.readIntLittle(u32, start_end_slice[4..8]);
                 return self.buf.items[start..end];
             }
-            const end_slice: *const [4]u8 = @ptrCast(
-                self.index_buf.items[index * 4..(index + 1) * 4].ptr);
+            const end_slice: *const [4]u8 = @ptrCast(self.index_buf.items[index * 4 .. (index + 1) * 4].ptr);
             const end = mem.readIntLittle(u32, end_slice);
             return self.buf.items[0..end];
         }
@@ -219,14 +217,14 @@ test "log insert" {
     var mlog = MessageLog(i64, i64FromBytes, i64ToBytes)
         .init(messages_buf, index_buf);
     defer mlog.deinit(allocator);
-    
+
     try mlog.logMessage(allocator, .Insert, .{ .index = 5, .value = -17 });
     try mlog.logMessage(allocator, .Insert, .{ .index = 3, .value = 100 });
     try mlog.logMessage(allocator, .Insert, .{ .index = 7, .value = 66 });
     try mlog.logMessage(allocator, .Insert, .{ .index = 1, .value = 3000 });
 }
 
-const MemoryBlob = @import("../blob.zig").MemoryBlob;
+const MemoryBlob = @import("../MemoryBlob.zig");
 
 test "serialize round trip" {
     const allocator = std.heap.page_allocator;
@@ -239,8 +237,8 @@ test "serialize round trip" {
     try mlog.logMessage(allocator, .Delete, .{ .index = 0 });
     try mlog.logMessage(allocator, .Update, .{ .index = 7, .value = -1 });
 
-    var header = Header {
-        .encoding = .Direct,
+    var header = Header{
+        .values_encoding = .Direct,
         .values_len = 0,
         .message_log_messages_len = 0,
         .message_log_index_len = 0,
@@ -248,7 +246,7 @@ test "serialize round trip" {
 
     var blob_data = try allocator.alloc(u8, 500);
     defer allocator.free(blob_data);
-    var blob = MemoryBlob { .data = blob_data };
+    var blob = MemoryBlob{ .data = blob_data };
 
     try mlog.write(&header, &blob);
 
@@ -291,14 +289,14 @@ pub fn benchScanMessageLog() !void {
         _ = message_log.scan(&index);
     }
     const end = std.time.microTimestamp();
-    std.log.err("Scan MessageLog: {d} micros / scan\n",
-        .{ @divTrunc((end - start), @as(i64, iterations)) });
+    std.log.err("Scan MessageLog: {d} micros / scan\n", .{@divTrunc((end - start), @as(i64, iterations))});
 }
 
 fn writeRandomMessage(
     allocator: Allocator,
     dst: *std.ArrayListUnmanaged(u8),
-    rnd: *RndGen, max_index: u32,
+    rnd: *RndGen,
+    max_index: u32,
 ) !void {
     const op = rnd.random().uintLessThan(u8, 3) + 1;
     try dst.append(allocator, op);
