@@ -3,25 +3,26 @@ const fmt = std.fmt;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
+const Conn = @import("./sqlite3/Conn.zig");
 const Stmt = @import("./sqlite3/Stmt.zig");
 
 const DataType = @import("./schema/ColumnType.zig").DataType;
 const Schema = @import("./schema/Schema.zig");
 
-pub const Error = error {
-    EmptyRowGroups,
-};
+pub const Error = @import("./row_group/error.zig").Error;
+pub const RowGroup = @import("./row_group/RowGroup.zig");
+const Db = @import("./row_group/Db.zig");
 
 pub const RowGroups = struct {
     const Self = @This();
-    
+
     table_name: []const u8,
+    db: Db,
     next_id: i64,
-    columns_len: usize,
 
     pub fn create(
         arena: *ArenaAllocator,
-        db_ctx: anytype,
+        conn: Conn,
         table_name: []const u8,
         schema: *const Schema,
     ) !Self {
@@ -30,20 +31,18 @@ pub const RowGroups = struct {
             .schema = schema,
         };
         const ddl = try fmt.allocPrintZ(arena.allocator(), "{s}", .{columnFormatter});
-        try db_ctx.conn.exec(ddl);
+        try conn.exec(ddl);
+        const db = Db.init(conn, table_name, schema);
         return .{
             .table_name = table_name,
+            .db = db,
             .next_id = 1,
-            .columns_len = schema.columns.items.len,
         };
     }
 
     test "create row groups table" {
         const conn = try @import("./sqlite3/Conn.zig").openInMemory();
         defer conn.close();
-        var db_ctx = .{
-            .conn = conn,
-        };
 
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
@@ -58,7 +57,7 @@ pub const RowGroups = struct {
                 .column_type = .{ .data_type = .Blob, .nullable = false },
                 .sk_rank = 0,
             },
-            .{ 
+            .{
                 .rank = 1,
                 .name = "bar",
                 .column_type = .{ .data_type = .Integer, .nullable = true },
@@ -72,7 +71,7 @@ pub const RowGroups = struct {
             .sort_key = sort_key,
         };
 
-        _ = try create(&arena, &db_ctx, "table_1", &schema);
+        _ = try create(&arena, conn, "table_1", &schema);
     }
 
     const DdlFormatter = struct {
@@ -92,7 +91,7 @@ pub const RowGroups = struct {
             );
             for (self.schema.sort_key.items, 0..) |_, sk_rank| {
                 const col = &self.schema.columns.items[sk_rank];
-                const data_type = DataType.SqliteFormatter {
+                const data_type = DataType.SqliteFormatter{
                     .data_type = col.column_type.data_type,
                 };
                 try writer.print(
@@ -123,10 +122,24 @@ pub const RowGroups = struct {
         }
     };
 
+    pub fn open(
+        arena: *ArenaAllocator,
+        conn: Conn,
+        table_name: []const u8,
+        schema: *const Schema,
+    ) !Self {
+        var db = Db.init(conn, table_name, schema);
+        const max_id = try db.maxId(arena.allocator());
+        return .{
+            .table_name = table_name,
+            .db = db,
+            .next_id = max_id + 1,
+        };
+    }
+
     fn insertRowGroup(
         self: *Self,
         arena: *ArenaAllocator,
-        db_ctx: anytype,
         sort_key: anytype,
         row_group: *RowGroup,
     ) !void {
@@ -134,14 +147,7 @@ pub const RowGroups = struct {
         self.next_id += 1;
         errdefer self.next_id -= 1;
 
-        try db.insertRowGroup(
-            arena.allocator(),
-            db_ctx,
-            self.table_name,
-            sort_key,
-            id,
-            row_group
-        );
+        try self.db.insertRowGroup(arena.allocator(), sort_key, id, row_group);
         row_group.id = id;
     }
 
@@ -153,10 +159,6 @@ pub const RowGroups = struct {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
 
-        var db_ctx = @import("./db.zig").Ctx(&db.db_ctx_fields){
-            .conn = conn,
-        };
-        
         const table_name = "foos";
         const ArrayListUnmanaged = std.ArrayListUnmanaged;
         const Column = @import("./schema/Column.zig");
@@ -168,7 +170,7 @@ pub const RowGroups = struct {
                 .column_type = .{ .data_type = .Integer, .nullable = false },
                 .sk_rank = 0,
             },
-            .{ 
+            .{
                 .rank = 1,
                 .name = "bar",
                 .column_type = .{ .data_type = .Float, .nullable = true },
@@ -182,7 +184,7 @@ pub const RowGroups = struct {
             .sort_key = sort_key_def,
         };
 
-        var row_groups = try create(&arena, &db_ctx, table_name, &schema);
+        var row_groups = try create(&arena, conn, table_name, &schema);
 
         const OwnedValue = @import("./value/owned.zig").OwnedValue;
         var sort_key = try arena.allocator().alloc(OwnedValue, 1);
@@ -191,14 +193,14 @@ pub const RowGroups = struct {
         var column_segment_ids = try arena.allocator().alloc(i64, 2);
         column_segment_ids[0] = 100;
         column_segment_ids[1] = 200;
-        var row_group = RowGroup {
+        var row_group = RowGroup{
             .id = 0,
             .rowid_segment_id = 1,
             .column_segment_ids = column_segment_ids,
             .record_count = 1000,
         };
 
-        try row_groups.insertRowGroup(&arena, &db_ctx, sort_key, &row_group);
+        try row_groups.insertRowGroup(&arena, sort_key, &row_group);
 
         try std.testing.expectEqual(@as(i64, 1), row_group.id);
     }
@@ -206,15 +208,11 @@ pub const RowGroups = struct {
     pub fn assignRowGroup(
         self: *Self,
         arena: *ArenaAllocator,
-        db_ctx: anytype,
         sort_key: anytype,
     ) !RowGroup {
-        return db.findRowGroup(
+        return self.db.findRowGroup(
             arena.allocator(),
-            db_ctx,
-            self.table_name,
             sort_key,
-            self.columns_len,
         );
     }
 
@@ -226,10 +224,6 @@ pub const RowGroups = struct {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
 
-        var db_ctx = @import("./db.zig").Ctx(&db.db_ctx_fields){
-            .conn = conn,
-        };
-        
         const table_name = "foos";
         const ArrayListUnmanaged = std.ArrayListUnmanaged;
         const Column = @import("./schema/Column.zig");
@@ -241,7 +235,7 @@ pub const RowGroups = struct {
                 .column_type = .{ .data_type = .Integer, .nullable = false },
                 .sk_rank = 0,
             },
-            .{ 
+            .{
                 .rank = 1,
                 .name = "bar",
                 .column_type = .{ .data_type = .Float, .nullable = true },
@@ -255,13 +249,13 @@ pub const RowGroups = struct {
             .sort_key = sort_key_def,
         };
 
-        var row_groups = try create(&arena, &db_ctx, table_name, &schema);
+        var row_groups = try create(&arena, conn, table_name, &schema);
 
         const OwnedValue = @import("./value/owned.zig").OwnedValue;
         var sort_key = try arena.allocator().alloc(OwnedValue, 1);
         sort_key[0] = .{ .Integer = 100 };
 
-        const res = row_groups.assignRowGroup(&arena, &db_ctx, sort_key);
+        const res = row_groups.assignRowGroup(&arena, sort_key);
         try std.testing.expectError(Error.EmptyRowGroups, res);
     }
 
@@ -272,164 +266,3 @@ pub const RowGroups = struct {
     //     record_count: i64,
     // ) !void {}
 };
-
-pub const RowGroup = struct {
-    const Self = @This();
-
-    id: i64,
-    rowid_segment_id: i64,
-    column_segment_ids: []i64,
-    record_count: i64,
-
-    pub fn deinit(self: *Self, allocator: Allocator) void {
-        allocator.free(self.column_segment_ids);
-    }
-};
-
-pub const db = struct {
-    pub const db_ctx_fields = [_][]const u8{
-        "find_row_group_stmt",
-        "insert_row_group_stmt",
-    };
-
-    pub fn insertRowGroup(
-        allocator: Allocator,
-        db_ctx: anytype,
-        table_name: []const u8,
-        sort_key: anytype,
-        id: i64,
-        row_group: *RowGroup,
-    ) !void {
-        if (db_ctx.insert_row_group_stmt == null) {
-            const query = try fmt.allocPrintZ(allocator,
-                \\INSERT INTO "_stanchion_{s}_row_groups" (
-                \\  id, rowid_segment_id, record_count, {s}, {s}
-                \\) VALUES (?, ?, ?, {s}, {s})
-                , .{
-                    table_name,
-                    SortKeyColumnListFormatter{.len = sort_key.len},
-                    SegmentIdColumnListFormatter{.len = row_group.column_segment_ids.len},
-                    ParameterListFormatter{.len = sort_key.len},
-                    ParameterListFormatter{.len = row_group.column_segment_ids.len},
-                });
-            defer allocator.free(query);
-            db_ctx.insert_row_group_stmt = try db_ctx.conn.prepare(query);
-        }
-
-        const stmt = db_ctx.insert_row_group_stmt.?;
-        try stmt.bind(.Int64, 1, id);
-        try stmt.bind(.Int64, 2, row_group.rowid_segment_id);
-        try stmt.bind(.Int64, 3, row_group.record_count);
-        for (sort_key, 4..) |sk_value, idx| {
-            try sk_value.bind(stmt, idx);
-        }
-        for (row_group.column_segment_ids, (sort_key.len + 4)..) |seg_id, idx| {
-            try stmt.bind(.Int64, idx, seg_id);
-        }
-        try stmt.exec();
-        try stmt.reset();
-    }
-
-    pub fn findRowGroup(
-        allocator: Allocator,
-        db_ctx: anytype,
-        table_name: []const u8,
-        sort_key: anytype,
-        columns_len: usize,
-    ) !RowGroup {
-        if (db_ctx.find_row_group_stmt == null) {
-            // TODO explore optimizing this query
-            const query = try fmt.allocPrintZ(allocator,
-                \\SELECT id, record_count, rowid_segment_id, {s}
-                \\FROM "_stanchion_{s}_row_groups"
-                \\WHERE ({s}) <= ({s})
-                \\ORDER BY {s} DESC
-                \\LIMIT 1
-                , .{
-                    SegmentIdColumnListFormatter{.len = columns_len},
-                    table_name,
-                    SortKeyColumnListFormatter{.len = sort_key.len},
-                    ParameterListFormatter{.len = sort_key.len},
-                    SortKeyColumnListFormatter{.len = sort_key.len},
-                });
-            defer allocator.free(query);
-            db_ctx.find_row_group_stmt = try db_ctx.conn.prepare(query);
-        }
-
-        const stmt = db_ctx.find_row_group_stmt.?;
-        for (sort_key, 1..) |sk_value, i| {
-            try sk_value.bind(stmt, i);
-        }
-        if (!try stmt.next()) {
-            // Assumes that there is a row group with the minimum sort key so that a row
-            // group will always be found after the first row group is added
-            return Error.EmptyRowGroups;
-        }
-        var row_group = RowGroup {
-            .id = stmt.read(.Int64, false, 0),
-            .record_count = stmt.read(.Int64, false, 1),
-            .rowid_segment_id = stmt.read(.Int64, false, 2),
-            .column_segment_ids = try allocator.alloc(i64, columns_len),
-        };
-        for (0..columns_len) |idx| {
-            row_group.column_segment_ids[idx] = stmt.read(.Int64, false, idx + 3);
-        }
-        try stmt.reset();
-        return row_group;
-    }
-
-    const SegmentIdColumnListFormatter = struct {
-        len: usize,
-
-        pub fn format(
-            self: @This(),
-            comptime _: []const u8,
-            _: std.fmt.FormatOptions,
-            writer: anytype,
-        ) !void {
-            for (0..self.len) |idx| {
-                if (idx > 0) {
-                    try writer.print(",", .{});
-                }
-                try writer.print("column_{d}_segment_id", .{idx});
-            }
-        }
-    };
-
-    const SortKeyColumnListFormatter = struct {
-        len: usize,
-
-        pub fn format(
-            self: @This(),
-            comptime _: []const u8,
-            _: std.fmt.FormatOptions,
-            writer: anytype,
-        ) !void {
-            for (0..self.len) |idx| {
-                if (idx > 0) {
-                    try writer.print(",", .{});
-                }
-                try writer.print("sk_value_{d}", .{idx});
-            }
-        }
-    };
-
-    const ParameterListFormatter = struct {
-        len: usize,
-
-        pub fn format(
-            self: @This(),
-            comptime _: []const u8,
-            _: std.fmt.FormatOptions,
-            writer: anytype,
-        ) !void {
-            for (0..self.len) |idx| {
-                if (idx > 0) {
-                    try writer.print(",", .{});
-                }
-                try writer.print("?", .{});
-            }
-        }
-    };
-};
-

@@ -7,11 +7,11 @@ const Conn = @import("./sqlite3/Conn.zig");
 const SqliteBlob = @import("./sqlite3/Blob.zig");
 const BlobSlice = @import("./sqlite3/Blob.zig").BlobSlice;
 
+const MemoryBlob = @import("./MemoryBlob.zig");
+
+pub const Db = @import("./stripe/Db.zig");
 const Header = @import("./stripe/Header.zig");
 const MakeMessageLog = @import("./stripe/message_log.zig").MessageLog;
-const Stripes = @import("./stripe/db.zig").Stripes;
-
-const MemoryBlob = @import("./MemoryBlob.zig");
 
 pub fn Stripe(comptime Blob: type, comptime LogicalType: type) type {
     const MessageLog = MakeMessageLog(LogicalType.Value, LogicalType.readDirect, LogicalType.writeDirect);
@@ -84,11 +84,11 @@ pub fn DbStripe(comptime LogicalType: type) type {
         stripe: Stripe(SqliteBlob, LogicalType),
 
         pub fn create(
-            db_stripes: *Stripes,
+            db: *Db,
             blob_size: u32,
         ) !Self {
-            const stripe_id = try db_stripes.create(blob_size);
-            var blob = try db_stripes.openBlob(stripe_id);
+            const stripe_id = try db.createStripe(blob_size);
+            var blob = try db.openStripeBlob(stripe_id);
             const header = Header{
                 // The encoding doesn't matter because `values_len` is 0
                 .values_encoding = @enumFromInt(0),
@@ -109,8 +109,8 @@ pub fn DbStripe(comptime LogicalType: type) type {
             };
         }
 
-        pub fn open(allocator: Allocator, db_stripes: *Stripes, stripe_id: i64) !Self {
-            var blob = try db_stripes.openBlob(stripe_id);
+        pub fn open(allocator: Allocator, db: *Db, stripe_id: i64) !Self {
+            var blob = try db.openStripeBlob(stripe_id);
             const stripe = Stripe(SqliteBlob, LogicalType).open(allocator, &blob);
             return .{
                 .id = stripe_id,
@@ -133,8 +133,8 @@ test "create db stripe" {
     defer conn.close();
     try @import("./db.zig").Migrations.apply(conn);
 
-    var db_ctx = Stripes.init(conn);
-    _ = try DbStripe(Bool).create(&db_ctx, 50_000);
+    var db = Db.init(conn);
+    _ = try DbStripe(Bool).create(&db, 50_000);
 }
 
 fn ValuesReader(comptime Blob: type, comptime LogicalType: type) type {

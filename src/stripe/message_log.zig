@@ -197,7 +197,8 @@ pub fn MessageLog(
 
         fn messageSlice(self: Self, index: usize) []u8 {
             if (index > 0) {
-                const start_end_slice: *const [8]u8 = @ptrCast(self.index_buf.items[(index - 1) * 4 .. (index + 1) * 4].ptr);
+                const start_end_slice: *const [8]u8 =
+                    @ptrCast(self.index_buf.items[(index - 1) * 4 .. (index + 1) * 4].ptr);
                 const start = mem.readIntLittle(u32, start_end_slice[0..4]);
                 const end = mem.readIntLittle(u32, start_end_slice[4..8]);
                 return self.buf.items[start..end];

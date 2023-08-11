@@ -4,61 +4,11 @@ const Type = std.builtin.Type;
 const Conn = @import("./sqlite3/Conn.zig");
 const Stmt = @import("./sqlite3/Stmt.zig");
 
-pub const Error = error {
+const Self = @This();
+
+pub const Error = error{
     QueryReturnedNoRows,
 } || @import("./sqlite3/errors.zig").Error;
-
-pub fn Ctx(comptime statement_fields: []const []const u8) type {
-    var fields: [statement_fields.len + 1]Type.StructField = undefined;
-    fields[0] = .{
-        .name = "conn",
-        .type = Conn,
-        .default_value = null,
-        .is_comptime = false,
-        // TODO what should this be?
-        .alignment = @alignOf(Conn),
-    };
-    inline for (statement_fields, 1..) |f, idx| {
-        fields[idx] = statementField(f);
-    }
-    return @Type(.{
-        .Struct = .{
-            .layout = .Auto,
-            .backing_integer = null,
-            .fields = &fields,
-            .decls = &[_]Type.Declaration{},
-            .is_tuple = false,
-        }
-    });
-}
-
-pub fn deinit_ctx(ctx: anytype) void {
-    const type_info = @typeInfo(@TypeOf(ctx));
-    switch (type_info) {
-        .Struct => |s| {
-            inline for (s.fields) |field| {
-                if (field.type == ?Stmt) {
-                    var stmt = @field(ctx, field.name);
-                    if (stmt) |st| {
-                        st.deinit();
-                    }
-                }
-            }
-        },
-        else => @compileError("db ctx must be a struct"),
-    }
-}
-
-fn statementField(comptime name: []const u8) Type.StructField {
-    return .{
-        .name = name,
-        .type = ?Stmt,
-        .default_value = &@as(?Stmt, null),
-        .is_comptime = false,
-        // TODO what should this be?
-        .alignment = @alignOf(?Stmt),
-    };
-}
 
 pub const Migrations = struct {
     const setup =
@@ -100,7 +50,7 @@ pub const Migrations = struct {
         \\) STRICT
     };
 
-    const migrations = [_][]const [*:0]const u8 {&v1};
+    const migrations = [_][]const [*:0]const u8{&v1};
 
     pub fn apply(conn: Conn) !void {
         try conn.exec(setup);

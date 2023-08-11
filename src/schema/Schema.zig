@@ -7,7 +7,7 @@ const Type = std.builtin.Type;
 const Column = @import("./Column.zig");
 const ColumnType = @import("./ColumnType.zig");
 const SchemaDef = @import("./SchemaDef.zig");
-const db = @import("./db.zig");
+const Db = @import("./Db.zig");
 
 const Self = @This();
 
@@ -16,7 +16,7 @@ sort_key: ArrayListUnmanaged(usize),
 
 pub const Error = error{ SortKeyColumnNotFound, ExecReturnedData };
 
-pub fn create(allocator: Allocator, db_ctx: anytype, table_id: i64, def: SchemaDef) !Self {
+pub fn create(allocator: Allocator, db: *Db, table_id: i64, def: SchemaDef) !Self {
     // Find and validate sort keys
     var sort_key = try ArrayListUnmanaged(usize)
         .initCapacity(allocator, def.sort_key.items.len);
@@ -57,7 +57,7 @@ pub fn create(allocator: Allocator, db_ctx: anytype, table_id: i64, def: SchemaD
         };
 
         // TODO this could use an arena allocator
-        try db.createColumn(allocator, db_ctx, table_id, &col);
+        try db.createColumn(allocator, table_id, &col);
 
         columns.appendAssumeCapacity(col);
     }
@@ -68,10 +68,10 @@ pub fn create(allocator: Allocator, db_ctx: anytype, table_id: i64, def: SchemaD
     };
 }
 
-pub fn load(allocator: Allocator, db_ctx: anytype, table_id: i64) !Self {
+pub fn load(allocator: Allocator, db: *Db, table_id: i64) !Self {
     var columns = ArrayListUnmanaged(Column){};
     var sort_key_len: usize = undefined;
-    try db.loadColumns(allocator, db_ctx, table_id, &columns, &sort_key_len);
+    try db.loadColumns(allocator, table_id, &columns, &sort_key_len);
 
     var sort_key = try ArrayListUnmanaged(usize).initCapacity(allocator, sort_key_len);
     sort_key.expandToCapacity();

@@ -3,25 +3,44 @@ const fmt = std.fmt;
 const Allocator = std.mem.Allocator;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 
+const Conn = @import("../sqlite3/Conn.zig");
 const Stmt = @import("../sqlite3/Stmt.zig");
 
 const Column = @import("./Column.zig");
 const ColumnType = @import("./ColumnType.zig");
 
-pub const db_ctx_fields = [_][]const u8{
-    "create_column_stmt",
-    "load_column_stmt",
-};
+const Self = @This();
+
+conn: Conn,
+load_columns: ?Stmt,
+create_column: ?Stmt,
+
+pub fn init(conn: Conn) Self {
+    return .{
+        .conn = conn,
+        .load_columns = null,
+        .create_column = null,
+    };
+}
+
+pub fn deinit(self: *Self) void {
+    if (self.load_columns) |stmt| {
+        stmt.deinit();
+    }
+    if (self.create_column) |stmt| {
+        stmt.deinit();
+    }
+}
 
 pub fn loadColumns(
+    self: *Self,
     allocator: Allocator,
-    db_ctx: anytype,
     table_id: i64,
     columns: *ArrayListUnmanaged(Column),
     sort_key_len: *usize,
 ) !void {
-    if (db_ctx.load_column_stmt == null) {
-        db_ctx.load_column_stmt = try db_ctx.conn.prepare(
+    if (self.load_columns == null) {
+        self.load_columns = try self.conn.prepare(
             \\SELECT rank, name, column_type, sk_rank
             \\FROM _stanchion_columns
             \\WHERE table_id = ?
@@ -29,7 +48,7 @@ pub fn loadColumns(
     }
 
     sort_key_len.* = 0;
-    const stmt = db_ctx.load_column_stmt.?;
+    const stmt = self.load_columns.?;
     try stmt.bind(.Int64, 1, table_id);
     while (try stmt.next()) {
         const col = try readColumn(allocator, stmt);
@@ -54,20 +73,20 @@ fn readColumn(allocator: Allocator, stmt: Stmt) !Column {
 }
 
 pub fn createColumn(
+    self: *Self,
     allocator: Allocator,
-    db_ctx: anytype,
     table_id: i64,
     column: *const Column,
 ) !void {
-    if (db_ctx.create_column_stmt == null) {
-        db_ctx.create_column_stmt = try db_ctx.conn.prepare(
+    if (self.create_column == null) {
+        self.create_column = try self.conn.prepare(
             \\INSERT INTO _stanchion_columns (
             \\  table_id, rank, name, column_type, sk_rank)
             \\VALUES (?, ?, ?, ?, ?)
         );
     }
 
-    const stmt = db_ctx.create_column_stmt.?;
+    const stmt = self.create_column.?;
     try stmt.bind(.Int64, 1, table_id);
     try stmt.bind(.Int32, 2, column.rank);
     try stmt.bind(.Text, 3, column.name);
@@ -81,23 +100,8 @@ pub fn createColumn(
 }
 
 test "create column" {
-    const DbCtx = @import("../db.zig").Ctx;
-
-    const conn = try @import("../sqlite3/Conn.zig").openInMemory();
-    try conn.exec(
-        \\CREATE TABLE _stanchion_columns (
-        \\  table_id INTEGER NOT NULL,
-        \\  rank INTEGER NOT NULL,
-        \\  name TEXT NOT NULL,
-        \\  column_type TEXT NOT NULL,
-        \\  sk_rank INTEGER NULL,
-        \\  PRIMARY KEY (table_id, rank)
-        \\)
-    );
-
-    var db_ctx = DbCtx(&db_ctx_fields){
-        .conn = conn,
-    };
+    const conn = try Conn.openInMemory();
+    try @import("../Db.zig").Migrations.apply(conn);
 
     var column = Column{
         .rank = 0,
@@ -105,5 +109,6 @@ test "create column" {
         .column_type = .{ .data_type = .Integer, .nullable = false },
         .sk_rank = 0,
     };
-    try createColumn(std.testing.allocator, &db_ctx, 100, &column);
+    var db = Self.init(conn);
+    try db.createColumn(std.testing.allocator, 100, &column);
 }

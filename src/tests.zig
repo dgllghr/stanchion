@@ -14,8 +14,7 @@ comptime {
 
     _ = @import("./value/owned.zig");
 
-    _ = @import("./row_group.zig").RowGroups;
+    _ = @import("./db.zig");
+    _ = @import("./row_group.zig");
     _ = @import("./Table.zig");
-
-    
 }
