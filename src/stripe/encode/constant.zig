@@ -36,8 +36,6 @@ pub fn Validator(
 
         value: ?Value,
 
-        pub const encoding = Encoding.Constant;
-
         pub fn init() Self {
             return .{ .value = null };
         }

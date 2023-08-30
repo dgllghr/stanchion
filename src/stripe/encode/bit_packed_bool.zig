@@ -46,8 +46,6 @@ pub const Validator = struct {
 
     count: usize,
 
-    pub const encoding = Encoding.BitPacked;
-
     pub fn init() Self {
         return .{ .count = 0 };
     }
@@ -67,7 +65,7 @@ pub const Validator = struct {
             ((self.count + @bitSizeOf(Word) - 1) / @bitSizeOf(Word)) * @sizeOf(Word);
         return .{
             .byte_len = byte_len,
-            .encoding = Self.encoding,
+            .encoding = Encoding.BitPacked,
             .encoder = Encoder.init(),
         };
     }
