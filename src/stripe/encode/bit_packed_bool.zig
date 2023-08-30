@@ -1,6 +1,9 @@
 const std = @import("std");
 const mem = std.mem;
 
+const Encoding = @import("../encoding.zig").Encoding;
+const Valid = @import("../validator.zig").Valid;
+
 const bit_packed_bool = @This();
 
 const Word = u32;
@@ -38,20 +41,15 @@ pub const Decoder = struct {
     }
 };
 
-const Validator = struct {
+pub const Validator = struct {
     const Self = @This();
 
     count: usize,
 
-    pub const Encoder = bit_packed_bool.Encoder;
+    pub const encoding = Encoding.BitPacked;
 
-    pub const Valid = struct {
-        byte_len: usize,
-        encoder: Self.Encoder,
-    };
-
-    pub fn init(count: usize) Self {
-        return .{ .count = count };
+    pub fn init() Self {
+        return .{ .count = 0 };
     }
 
     // TODO experimental
@@ -59,21 +57,23 @@ const Validator = struct {
         return false;
     }
 
-    pub fn next(_: *Self, _: bool) bool {
+    pub fn next(self: *Self, _: bool) bool {
+        self.count += 1;
         return false;
     }
 
-    pub fn finish(self: Self) ?Valid {
+    pub fn finish(self: Self) ?Valid(Encoder) {
         const byte_len =
             ((self.count + @bitSizeOf(Word) - 1) / @bitSizeOf(Word)) * @sizeOf(Word);
         return .{
             .byte_len = byte_len,
-            .encoder = Self.Encoder.init(),
+            .encoding = Self.encoding,
+            .encoder = Encoder.init(),
         };
     }
 };
 
-const Encoder = struct {
+pub const Encoder = struct {
     const Self = @This();
 
     word: Word,
@@ -81,6 +81,7 @@ const Encoder = struct {
 
     const Value = bool;
     const Decoder = bit_packed_bool.Decoder;
+    const Validator = bit_packed_bool.Validator;
 
     fn init() Self {
         return .{ .word = 0, .index = 0 };
@@ -91,19 +92,7 @@ const Encoder = struct {
     }
 };
 
-// TODO move to blob file
-const TestBlob = struct {
-    data: []u8,
-
-    pub fn readAt(self: @This(), buf: []u8, start: usize) !void {
-        const end = start + buf.len;
-        mem.copy(u8, buf, self.data[start..end]);
-    }
-
-    pub fn writeAt(self: @This(), buf: []const u8, start: usize) !void {
-        mem.copy(u8, self.data[start..], buf);
-    }
-};
+const MemoryBlob = @import("../../MemoryBlob.zig");
 
 test "decoder" {
     const allocator = std.testing.allocator;
@@ -113,7 +102,7 @@ test "decoder" {
     const expected_value: u32 = 29;
     mem.writeIntLittle(u32, buf[0..4], expected_value);
 
-    var blob = TestBlob{ .data = buf };
+    var blob = MemoryBlob{ .data = buf };
     var decoder = try Decoder.init(blob);
 
     var value = try decoder.decode(blob, 0);

@@ -1,6 +1,9 @@
 const std = @import("std");
 const mem = std.mem;
 
+const Encoding = @import("../encoding.zig").Encoding;
+const Valid = @import("../validator.zig").Valid;
+
 const constant = @This();
 
 pub fn Decoder(
@@ -33,12 +36,7 @@ pub fn Validator(
 
         value: ?Value,
 
-        pub const Encoder = constant.Encoder(Value, toBytes);
-
-        pub const Valid = struct {
-            byte_len: usize,
-            encoder: Self.Encoder,
-        };
+        pub const encoding = Encoding.Constant;
 
         pub fn init() Self {
             return .{ .value = null };
@@ -56,11 +54,12 @@ pub fn Validator(
             return true;
         }
 
-        pub fn finish(self: Self) ?Valid {
+        pub fn finish(self: Self) ?Valid(Encoder(Value, toBytes)) {
             if (self.value) |value| {
-                const encoder = Self.Encoder{ .value = value };
+                const encoder = Encoder(Value, toBytes){ .value = value };
                 return .{
                     .byte_len = @sizeOf(Value),
+                    .encoding = Self.encoding,
                     .encoder = encoder,
                 };
             }
