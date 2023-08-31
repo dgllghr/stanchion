@@ -75,6 +75,12 @@ There is currently no external index mechanism. See [Indexing](#indexing) for
 details on how stanchion indexes data and what queries can be made more
 efficient by those indexes.
 
+### Column types are enforced
+
+Values being inserted into Stanchion tables must be of the column's declared
+type. This is equivalent to declaring a SQLite table with the `STRICT` table
+option.
+
 ## Build
 
 [Install Zig](https://ziglang.org/learn/getting-started/#installing-zig) and
