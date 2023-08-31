@@ -50,17 +50,11 @@ pub const Validator = struct {
         return .{ .count = 0 };
     }
 
-    // TODO experimental
-    pub inline fn ready(_: *Self) bool {
-        return false;
-    }
-
-    pub fn next(self: *Self, _: bool) bool {
+    pub fn next(self: *Self, _: bool) !void {
         self.count += 1;
-        return false;
     }
 
-    pub fn finish(self: Self) ?Valid(Encoder) {
+    pub fn finish(self: Self) !Valid(Encoder) {
         const byte_len =
             ((self.count + @bitSizeOf(Word) - 1) / @bitSizeOf(Word)) * @sizeOf(Word);
         return .{

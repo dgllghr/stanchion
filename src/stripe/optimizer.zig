@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const Error = @import("./error.zig").Error;
 const Valid = @import("./validator.zig").Valid;
 
 pub fn Optimizer(comptime LogicalType: type) type {
@@ -27,11 +28,14 @@ pub fn Optimizer(comptime LogicalType: type) type {
             };
         }
 
-        pub fn next(self: *Self, value: LogicalType.Value) bool {
+        pub fn next(self: *Self, value: LogicalType.Value) !void {
             inline for (std.meta.fields(LogicalType.Validators), 0..) |f, idx| {
                 if (self.continue_mask & (1 << idx) > 0) {
                     var validator = &@field(self.validators, f.name);
-                    const cont = validator.next(value);
+                    var cont = true;
+                    validator.next(value) catch |_| {
+                        cont = false;
+                    };
                     if (cont) {
                         self.continue_mask |= 1 << idx;
                     } else {
@@ -39,10 +43,12 @@ pub fn Optimizer(comptime LogicalType: type) type {
                     }
                 }
             }
-            return self.continue_mask > 0;
+            if (self.continue_mask == 0) {
+                return Error.ValuesNotEncodable;
+            }
         }
 
-        pub fn finish(self: *Self) ?Valid(LogicalType.Encoder) {
+        pub fn finish(self: *Self) !Valid(LogicalType.Encoder) {
             var found_valid = false;
             var valid = Valid(LogicalType.Encoder){
                 .encoder = undefined,
@@ -65,7 +71,7 @@ pub fn Optimizer(comptime LogicalType: type) type {
                 }
             }
             if (!found_valid) {
-                return null;
+                return Error.ValuesNotEncodable;
             }
             return valid;
         }

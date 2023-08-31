@@ -6,6 +6,7 @@ const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const Optimizer = @import("./stripe/optimizer.zig").Optimizer;
 
 pub const Encoding = @import("./stripe/encoding.zig").Encoding;
+pub const Valid = @import("./stripe/validator.zig").Valid;
 
 pub const Type = struct {
     pub const Bool = @import("./stripe/logical_type/Bool.zig");

@@ -2,6 +2,7 @@ const std = @import("std");
 const mem = std.mem;
 
 const Encoding = @import("../encoding.zig").Encoding;
+const Error = @import("../error.zig").Error;
 const Valid = @import("../validator.zig").Valid;
 
 const constant = @This();
@@ -40,19 +41,18 @@ pub fn Validator(
             return .{ .value = null };
         }
 
-        pub fn next(self: *Self, value: Value) bool {
+        pub fn next(self: *Self, value: Value) !void {
             if (self.value) |curr_value| {
                 if (curr_value != value) {
                     self.value = null;
-                    return false;
+                    return Error.ValuesNotEncodable;
                 }
             } else {
                 self.value = value;
             }
-            return true;
         }
 
-        pub fn finish(self: Self) ?Valid(Encoder(Value, toBytes)) {
+        pub fn finish(self: Self) !Valid(Encoder(Value, toBytes)) {
             if (self.value) |value| {
                 const encoder = Encoder(Value, toBytes){ .value = value };
                 return .{
@@ -61,7 +61,7 @@ pub fn Validator(
                     .encoder = encoder,
                 };
             }
-            return null;
+            return Error.ValuesNotEncodable;
         }
     };
 }

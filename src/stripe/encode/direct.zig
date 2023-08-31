@@ -38,12 +38,11 @@ pub fn Validator(
             return .{ .count = 0 };
         }
 
-        pub fn next(self: *Self, _: Value) bool {
+        pub fn next(self: *Self, _: Value) !void {
             self.count += 1;
-            return false;
         }
 
-        pub fn finish(self: Self) ?Valid(Encoder(Value, toBytes)) {
+        pub fn finish(self: Self) !Valid(Encoder(Value, toBytes)) {
             return .{
                 .byte_len = self.count * @sizeOf(Value),
                 .encoding = Encoding.Direct,
