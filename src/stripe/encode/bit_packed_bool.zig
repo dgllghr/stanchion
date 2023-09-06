@@ -6,7 +6,13 @@ const Valid = @import("../validator.zig").Valid;
 
 const bit_packed_bool = @This();
 
-const Word = u32;
+// Must be a multiple of 8 to be easily translated to/from octets
+const Word = u64;
+comptime {
+    if (@bitSizeOf(Word) == 0 or @mod(@bitSizeOf(Word), 8) != 0) {
+        @compileError("word type bit width must be a multiple of 8 and non-zero");
+    }
+}
 
 pub const Decoder = struct {
     const Self = @This();
@@ -44,23 +50,31 @@ pub const Decoder = struct {
 pub const Validator = struct {
     const Self = @This();
 
-    count: usize,
+    count: u32,
+
+    pub const Encoder = bit_packed_bool.Encoder;
 
     pub fn init() Self {
         return .{ .count = 0 };
     }
 
-    pub fn next(self: *Self, _: bool) !void {
+    pub fn unused(self: Self) bool {
+        return self.count == 0;
+    }
+
+    pub fn next(self: *Self, _: bool) void {
         self.count += 1;
     }
 
-    pub fn finish(self: Self) !Valid(Encoder) {
+    pub fn end(self: Self) !Valid(Self.Encoder) {
         const byte_len =
             ((self.count + @bitSizeOf(Word) - 1) / @bitSizeOf(Word)) * @sizeOf(Word);
         return .{
-            .byte_len = byte_len,
-            .encoding = Encoding.BitPacked,
-            .encoder = Encoder.init(),
+            .meta = .{
+                .byte_len = byte_len,
+                .encoding = Encoding.BitPacked,
+            },
+            .encoder = Self.Encoder.init(),
         };
     }
 };
@@ -68,19 +82,46 @@ pub const Validator = struct {
 pub const Encoder = struct {
     const Self = @This();
 
+    const BitIndexInt = u6;
+
     word: Word,
-    index: usize,
+    bit_index: BitIndexInt,
+    word_index: usize,
 
     const Value = bool;
-    const Decoder = bit_packed_bool.Decoder;
-    const Validator = bit_packed_bool.Validator;
 
     fn init() Self {
-        return .{ .word = 0, .index = 0 };
+        return .{ .word = 0, .bit_index = 0, .word_index = 0 };
     }
 
-    pub fn encodeAll(_: *Self, _: anytype, _: anytype) !void {
-        @panic("not implemented");
+    pub fn deinit(_: *Self) void {}
+
+    pub fn begin(_: *Self, _: anytype) !bool {
+        // TODO write the word bit width?
+        return true;
+    }
+
+    pub fn encode(self: *Self, blob: anytype, value: Value) !void {
+        if (value) {
+            self.word |= @as(Word, 1) << self.bit_index;
+        }
+        self.bit_index += 1;
+        if (self.bit_index >= @bitSizeOf(Word)) {
+            var buf: [@sizeOf(Word)]u8 = undefined;
+            mem.writeIntLittle(Word, &buf, self.word);
+            try blob.writeAt(&buf, self.word_index * @sizeOf(Word));
+            self.word = 0;
+            self.bit_index = 0;
+            self.word_index += 1;
+        }
+    }
+
+    pub fn end(self: *Self, blob: anytype) !void {
+        if (self.bit_index > 0) {
+            var buf: [@sizeOf(Word)]u8 = undefined;
+            mem.writeIntLittle(Word, &buf, self.word);
+            try blob.writeAt(&buf, self.word_index * @sizeOf(Word));
+        }
     }
 };
 

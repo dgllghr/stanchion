@@ -17,10 +17,10 @@ pub fn readAt(self: Self, buf: []u8, start: usize) !void {
     mem.copy(u8, buf, self.data[start..end]);
 }
 
-pub fn writeAt(self: *Self, buf: []const u8, start: usize) !void {
+pub fn writeAt(self: Self, buf: []const u8, start: usize) !void {
     mem.copy(u8, self.data[start..], buf);
 }
 
-pub fn sliceFrom(self: *Self, from: u32) BlobSlice(Self) {
+pub fn sliceFrom(self: Self, from: u32) BlobSlice(Self) {
     return .{ .blob = self, .from = from };
 }

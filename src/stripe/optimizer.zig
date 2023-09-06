@@ -1,96 +1,72 @@
 const std = @import("std");
+const meta = std.meta;
 
-const Error = @import("./error.zig").Error;
-const Valid = @import("./validator.zig").Valid;
+const Error = @import("error.zig").Error;
+const Valid = @import("validator.zig").Valid;
 
-pub fn Optimizer(comptime LogicalType: type) type {
+/// A Validator that receives other validators as input and chooses the encoding that
+/// results in the smallest byte length for the stripe.
+pub fn Optimizer(comptime Validators: type, comptime Encoder: type) type {
+    const validator_fields = std.meta.fields(Validators);
+    if (validator_fields.len == 0) {
+        @compileError("optimizer requires at least one validator");
+    }
+
     // TODO check that the encoder union has a variant with 1:1 mapping between encoder
     //      variants and validator fields
-
-    // TODO it might improve performance to round this up to a u{power-of-2}
-    const ContinueMask = @Type(.{
-        .Int = .{
-            .signedness = .unsigned,
-            .bits = std.meta.fields(LogicalType.Validators).len,
-        },
-    });
+    const Value = Encoder.Value;
 
     return struct {
         const Self = @This();
 
-        validators: LogicalType.Validators,
-        continue_mask: ContinueMask,
+        validators: Validators,
 
-        fn init(validators: LogicalType.Validators) Self {
-            return .{
-                .validators = validators,
-                .continue_mask = std.math.maxInt(ContinueMask),
-            };
+        pub fn init() Self {
+            var validators: Validators = undefined;
+            inline for (validator_fields) |f| {
+                @field(validators, f.name) = f.type.init();
+            }
+            return .{ .validators = validators };
         }
 
-        pub fn next(self: *Self, value: LogicalType.Value) !void {
-            inline for (std.meta.fields(LogicalType.Validators), 0..) |f, idx| {
-                if (self.continue_mask & (1 << idx) > 0) {
-                    var validator = &@field(self.validators, f.name);
-                    var cont = true;
-                    validator.next(value) catch |_| {
-                        cont = false;
-                    };
-                    if (cont) {
-                        self.continue_mask |= 1 << idx;
-                    } else {
-                        self.continue_mask &= 0 << idx;
-                    }
-                }
-            }
-            if (self.continue_mask == 0) {
-                return Error.ValuesNotEncodable;
+        pub fn unused(self: Self) bool {
+            return @field(self.validators, validator_fields[0].name).unused();
+        }
+
+        pub fn next(self: *Self, value: Value) void {
+            inline for (validator_fields) |f| {
+                var validator = &@field(self.validators, f.name);
+                validator.next(value);
             }
         }
 
-        pub fn finish(self: *Self) !Valid(LogicalType.Encoder) {
+        pub fn end(self: *Self) !Valid(Encoder) {
             var found_valid = false;
-            var valid = Valid(LogicalType.Encoder){
+            var valid = Valid(Encoder){
+                .meta = .{
+                    .byte_len = @as(u32, std.math.maxInt(u32)),
+                    .encoding = undefined,
+                },
                 .encoder = undefined,
-                .encoding = undefined,
-                .byte_len = @as(usize, std.math.maxInt(usize)),
             };
-            inline for (std.meta.fields(LogicalType.Validators)) |f| {
+            inline for (validator_fields) |f| {
                 const validator = &@field(self.validators, f.name);
-                if (validator.finish()) |v| {
-                    if (v.byte_len < valid.byte_len) {
+                if (validator.end()) |v| {
+                    if (v.meta.byte_len < valid.meta.byte_len) {
                         found_valid = true;
-                        valid.byte_len = v.byte_len;
-                        valid.encoding = v.encoding;
+                        valid.meta = v.meta;
                         valid.encoder = @unionInit(
-                            LogicalType.Encoder,
+                            Encoder,
                             f.name,
                             v.encoder,
                         );
                     }
-                }
+                } else |_| {}
             }
             if (!found_valid) {
-                return Error.ValuesNotEncodable;
+                return Error.NotEncodable;
             }
             return valid;
         }
     };
-}
-
-test "optimize encoding" {
-    const Bool = @import("./logical_type/Bool.zig");
-
-    var optimizer = Optimizer(Bool).init(Bool.Validators.init());
-    for (0..100) |idx| {
-        // The loop will exit after the second value is passed to the constant validator
-        try std.testing.expect(idx < 2);
-        const cont = optimizer.next(idx % 2 == 0);
-        if (!cont) {
-            break;
-        }
-    }
-    var valid = optimizer.finish();
-    try std.testing.expect(valid != null);
-    try std.testing.expect(valid.?.encoding == .BitPacked);
 }

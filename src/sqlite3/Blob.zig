@@ -46,20 +46,20 @@ pub fn readAt(self: Self, buf: []u8, start: usize) !void {
     }
 }
 
-pub fn writeAt(self: *Self, buf: []const u8, start: usize) !void {
+pub fn writeAt(self: Self, buf: []const u8, start: usize) !void {
     const res = c.sqlite3_blob_write(self.blob, buf.ptr, @intCast(buf.len), @intCast(start));
     if (res != c.SQLITE_OK) {
         return errors.errorFromResultCode(res);
     }
 }
 
-pub fn sliceFrom(self: *Self, from: u32) BlobSlice(Self) {
+pub fn sliceFrom(self: Self, from: u32) BlobSlice(Self) {
     return .{ .blob = self, .from = from };
 }
 
 pub fn BlobSlice(comptime Blob: type) type {
     return struct {
-        blob: *Blob,
+        blob: Blob,
         from: u32,
 
         pub fn len(self: @This()) u32 {
@@ -70,11 +70,11 @@ pub fn BlobSlice(comptime Blob: type) type {
             try self.blob.readAt(buf, start + self.from);
         }
 
-        pub fn writeAt(self: *@This(), buf: []const u8, start: usize) !void {
+        pub fn writeAt(self: @This(), buf: []const u8, start: usize) !void {
             try self.blob.writeAt(buf, start + self.from);
         }
 
-        pub fn sliceFrom(self: *@This(), from: u32) BlobSlice(Blob) {
+        pub fn sliceFrom(self: @This(), from: u32) BlobSlice(Blob) {
             return .{ .blob = self.blob, .from = self.from + from };
         }
     };

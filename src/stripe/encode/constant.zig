@@ -35,33 +35,52 @@ pub fn Validator(
     return struct {
         const Self = @This();
 
-        value: ?Value,
+        state: State,
+
+        pub const Encoder = constant.Encoder;
+
+        const State = union(enum) {
+            empty,
+            valid: Value,
+            invalid,
+        };
 
         pub fn init() Self {
-            return .{ .value = null };
+            return .{
+                .state = .empty,
+            };
         }
 
-        pub fn next(self: *Self, value: Value) !void {
-            if (self.value) |curr_value| {
-                if (curr_value != value) {
-                    self.value = null;
-                    return Error.ValuesNotEncodable;
-                }
-            } else {
-                self.value = value;
+        pub fn unused(self: Self) bool {
+            return self.state == .empty;
+        }
+
+        pub fn next(self: *Self, value: Value) void {
+            switch (self.state) {
+                .valid => |curr_value| {
+                    if (curr_value != value) {
+                        self.state = .invalid;
+                    }
+                },
+                .empty => self.state = .{ .valid = value },
+                .invalid => {},
             }
         }
 
-        pub fn finish(self: Self) !Valid(Encoder(Value, toBytes)) {
-            if (self.value) |value| {
-                const encoder = Encoder(Value, toBytes){ .value = value };
-                return .{
-                    .byte_len = @sizeOf(Value),
-                    .encoding = Self.encoding,
-                    .encoder = encoder,
-                };
+        pub fn end(self: Self) !Valid(Self.Encoder(Value, toBytes)) {
+            switch (self.state) {
+                .valid => |value| {
+                    const encoder = Self.Encoder(Value, toBytes){ .value = value };
+                    return .{
+                        .meta = .{
+                            .byte_len = @sizeOf(Value),
+                            .encoding = .Constant,
+                        },
+                        .encoder = encoder,
+                    };
+                },
+                else => return Error.NotEncodable,
             }
-            return Error.ValuesNotEncodable;
         }
     };
 }
@@ -76,74 +95,23 @@ pub fn Encoder(
         value: Value,
 
         const Value = V;
-        const Decoder = constant.Decoder;
 
-        pub fn encodeAll(self: *Self, dst: anytype, _: anytype) !void {
-            const buf = toBytes(self.value);
-            try dst.writeAt(buf[0..], 0);
+        pub fn init(value: Value) void {
+            return .{ .value = value };
         }
+
+        pub fn deinit(_: *Self) void {}
+
+        pub fn begin(self: *Self, blob: anytype) !bool {
+            const buf = toBytes(self.value);
+            try blob.writeAt(buf[0..], 0);
+            return false;
+        }
+
+        pub fn encode(_: *Self, _: anytype, _: Value) !void {}
+
+        pub fn end(_: *Self, _: anytype) !void {}
     };
-}
-
-// TODO move to blob file
-const TestBlob = struct {
-    data: []u8,
-
-    pub fn readAt(self: @This(), buf: []u8, start: usize) !void {
-        const end = start + buf.len;
-        mem.copy(u8, buf, self.data[start..end]);
-    }
-
-    pub fn writeAt(self: @This(), buf: []const u8, start: usize) !void {
-        mem.copy(u8, self.data[start..], buf);
-    }
-};
-
-test "decoder" {
-    const allocator = std.testing.allocator;
-    const buf = try allocator.alloc(u8, 10);
-    defer allocator.free(buf);
-
-    const expected_value: u32 = 17;
-    mem.writeIntLittle(u32, buf[0..4], expected_value);
-
-    var blob = TestBlob{ .data = buf };
-    var decoder = try Decoder(u32, readU32).init(blob);
-    const value = try decoder.decode(blob, 0);
-
-    try std.testing.expectEqual(expected_value, value);
-}
-
-test "encoder" {
-    const allocator = std.testing.allocator;
-    const buf = try allocator.alloc(u8, 10);
-    defer allocator.free(buf);
-
-    const expected_value: u32 = 17;
-    var encoder = Encoder(u32, writeU32){ .value = expected_value };
-
-    var blob = TestBlob{ .data = buf };
-    try encoder.encodeAll(blob, .{});
-
-    const value = readU32(blob.data[0..4]);
-    try std.testing.expectEqual(expected_value, value);
-}
-
-test "validator" {
-    var validator = Validator(u32, writeU32){ .value = null };
-    var cont = false;
-    cont = validator.next(17);
-    try std.testing.expectEqual(true, cont);
-    cont = validator.next(17);
-    try std.testing.expectEqual(true, cont);
-    cont = validator.next(18);
-    try std.testing.expectEqual(false, cont);
-
-    validator = Validator(u32, writeU32){ .value = null };
-    cont = validator.next(17);
-    try std.testing.expectEqual(true, cont);
-    const valid = validator.finish();
-    try std.testing.expectEqual(@as(usize, 4), valid.?.byte_len);
 }
 
 fn readU32(buf: *const [4]u8) u32 {

@@ -9,6 +9,7 @@ comptime {
 
     _ = @import("./stripe/encode/bit_packed_bool.zig");
     _ = @import("./stripe/encode/constant.zig");
+    _ = @import("./stripe/logical_type/Bool.zig");
     _ = @import("./stripe/optimizer.zig");
     _ = @import("./stripe.zig");
 

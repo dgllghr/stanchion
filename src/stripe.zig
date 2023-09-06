@@ -1,62 +1,55 @@
-const std = @import("std");
-const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
-const ArrayListUnmanaged = std.ArrayListUnmanaged;
+//! pub const Validator = struct {
+//!     const Self = @This();
+//!
+//!     const Value;
+//!
+//!     /// Type of the encoder that is created when validation completes successfully
+//!     const Encoder;
+//!
+//!     /// Returns true if `next` has not been called, false otherwise.
+//!     fn unused(self: Self) bool;
+//!
+//!     /// Provide the next value in the sequence to the validator. If the validator
+//!     /// determines that the sequence of values is not encodable while executing
+//!     /// `next`, it must continue to accept calls to next but they may be a noop.
+//!     fn next(self: *Self, value: Value) void;
+//!
+//!     /// Returns the `byte_len`, `encoding`, and `encoder` as part of the `Valid`
+//!     /// struct if validation succeeds. If validation fails, returns `.NotEncodable`.
+//!     fn end(self: Self) error{NotEncodable}!Valid(Encoder);
+//! };
+//!
+//! pub const Encoder = struct {
+//!     const Self = @This();
+//!
+//!     const Value;
+//!
+//!     /// Destroy the encoder. Do not do any IO
+//!     fn deinit(self: *Self) void;
+//!
+//!     /// Write any data to the blob that is provided by the validator that is needed
+//!     /// for decoding. Return whether the encoding process should continue (true) or
+//!     /// whether encoding is complete (false). If `false` is returned, `encode` must
+//!     /// be a noop. In either case, the caller must call `end`.
+//!     ///
+//!     /// For example, the constant encoder receives the single value present in the
+//!     /// stripe from the validator and writes it in `begin`. No other writes are
+//!     /// necessary so the caller can skip calling `encode` and must call `end`.
+//!     fn begin(self: *Self, blob: anytype) !bool;
+//!
+//!     /// Encode a single value at the end of the encoded values
+//!     pub fn encode(self: *Self, blob: anytype, value: Value) !void;
+//!
+//!     /// Finish the encoding by writing any buffered data or other data required for
+//!     /// decoding
+//!     pub fn end(self: *Self, blob: anytype) !void;
+//! };
 
-const Optimizer = @import("./stripe/optimizer.zig").Optimizer;
+pub const Encoding = @import("stripe/encoding.zig").Encoding;
+const validator = @import("stripe/validator.zig");
+pub const Meta = validator.Meta;
+pub const Valid = validator.Valid;
 
-pub const Encoding = @import("./stripe/encoding.zig").Encoding;
-pub const Valid = @import("./stripe/validator.zig").Valid;
-
-pub const Type = struct {
-    pub const Bool = @import("./stripe/logical_type/Bool.zig");
-};
-
-pub fn Reader(comptime Blob: type, comptime LogicalType: type) type {
-    const Value = LogicalType.Value;
-
-    return struct {
-        const Self = @This();
-
-        blob: *const Blob,
-        decoder: LogicalType.Decoder,
-
-        pub fn init(encoding: Encoding, blob: *const Blob) !Self {
-            const decoder = try LogicalType.Decoder.init(encoding, blob);
-            return .{
-                .blob = blob,
-                .decoder = decoder,
-            };
-        }
-
-        pub fn get(self: *Self, index: usize) !Value {
-            return self.decoder.decode(self.blob, index);
-        }
-    };
-}
-
-pub fn Validator(comptime LogicalType: type) type {
-    return Optimizer(LogicalType);
-}
-
-pub fn Writer(comptime Blob: type, comptime LogicalType: type) type {
-    const Value = LogicalType.Value;
-
-    return struct {
-        const Self = @This();
-
-        blob: *const Blob,
-        encoder: LogicalType.Encoder,
-
-        pub fn init(encoder: LogicalType.Encoder, blob: *const Blob) !Self {
-            return .{
-                .blob = blob,
-                .encoder = encoder,
-            };
-        }
-
-        pub fn write(_: *Self, _: Value) !void {
-            @panic("todo");
-        }
-    };
-}
+pub const Bool = @import("stripe/logical_type/Bool.zig");
+pub const Byte = @import("stripe/logical_type/Byte.zig");
+pub const Int = @import("stripe/logical_type/Int.zig");
