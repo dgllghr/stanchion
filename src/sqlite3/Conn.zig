@@ -1,7 +1,12 @@
-const c = @import("./c.zig").c;
+//! A thin wrapper over a sqlite connection. Since this is a struct that only contains a
+//! pointer, values of type `Conn` should be passed by value rather than by pointer.
+//! Almost all queries and dml should happen through a `Stmt`, which is created with the
+//! `prepare` function. In cases where no parameters are passed and no results are
+//! returned, use the `exec` shortcut function.
 
-const errors = @import("./errors.zig");
-const Stmt = @import("./Stmt.zig");
+const c = @import("c.zig").c;
+const errors = @import("errors.zig");
+const Stmt = @import("Stmt.zig");
 
 const Self = @This();
 

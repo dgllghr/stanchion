@@ -1,3 +1,5 @@
+//! This is inspired by [zig-sqlite](https://github.com/vrischmann/zig-sqlite)
+
 const std = @import("std");
 const debug = std.debug;
 const fmt = std.fmt;
@@ -9,7 +11,7 @@ const testing = std.testing;
 const c = @import("c.zig").c;
 const versionGreaterThanOrEqualTo = @import("c.zig").versionGreaterThanOrEqualTo;
 
-const Conn = @import("./Conn.zig");
+const Conn = @import("Conn.zig");
 
 /// CallbackContext is only valid for the duration of a callback from sqlite into the
 /// virtual table instance. It should no tbe saved between calls, and it is provided to
@@ -25,11 +27,7 @@ pub const CallbackContext = struct {
         comptime format_string: []const u8,
         values: anytype,
     ) void {
-        self.error_message = fmt.allocPrint(
-            self.arena.allocator(),
-            format_string,
-            values
-        ) catch |err| switch (err) {
+        self.error_message = fmt.allocPrint(self.arena.allocator(), format_string, values) catch |err| switch (err) {
             error.OutOfMemory => "can't set diagnostic message, out of memory",
         };
     }
@@ -192,8 +190,7 @@ pub const BestIndexBuilder = struct {
             .allocator = allocator,
             .index_info = index_info,
             .id_str_buffer = std.ArrayList(u8).init(allocator),
-            .constraints = try allocator.alloc(Constraint,
-                @intCast(index_info.nConstraint)),
+            .constraints = try allocator.alloc(Constraint, @intCast(index_info.nConstraint)),
             .columns_used = @intCast(index_info.colUsed),
             .id = .{},
         };
@@ -296,12 +293,16 @@ fn parseModuleArguments(
     return res;
 }
 
+/// Wrapper to create a sqlite virtual table from a zig struct that has the virtual
+/// table callbacks. This makes defining a virtual table in zig more zig-like by handling
+/// some of the memory layout and converts raw sqlite types to the corresponding zig
+/// wrappers.
 pub fn VirtualTable(comptime Table: type) type {
     const State = struct {
         const Self = @This();
 
         /// vtab must come first so sqlite interprets this as a `sqlite3_vtab` struct
-        /// The different functions receive a pointer to a vtab so we have to use 
+        /// The different functions receive a pointer to a vtab so we have to use
         /// fieldParentPtr to get our state.
         vtab: c.sqlite3_vtab,
         allocator: mem.Allocator,
@@ -351,7 +352,7 @@ pub fn VirtualTable(comptime Table: type) type {
                 .xEof = null,
                 .xColumn = null,
                 .xRowid = null,
-                .xUpdate = null,
+                .xUpdate = xUpdate,
                 .xBegin = null,
                 .xSync = null,
                 .xCommit = null,
@@ -378,7 +379,7 @@ pub fn VirtualTable(comptime Table: type) type {
                 .xEof = null,
                 .xColumn = null,
                 .xRowid = null,
-                .xUpdate = null,
+                .xUpdate = xUpdate,
                 .xBegin = null,
                 .xSync = null,
                 .xCommit = null,
@@ -414,7 +415,7 @@ pub fn VirtualTable(comptime Table: type) type {
                 err_str.* = dupeToSQLiteString("out of memory");
                 return c.SQLITE_ERROR;
             };
-            var cb_ctx = CallbackContext { .arena = &arena };
+            var cb_ctx = CallbackContext{ .arena = &arena };
             const conn = Conn.init(db.?);
 
             const initTable = if (create) Table.create else Table.connect;
@@ -483,6 +484,28 @@ pub fn VirtualTable(comptime Table: type) type {
             return c.SQLITE_OK;
         }
 
+        fn xUpdate(
+            vtab: [*c]c.sqlite3_vtab,
+            argc: c_int,
+            argv: [*c]?*c.sqlite3_value,
+            row_id_ptr: [*c]c.sqlite3_int64,
+        ) callconv(.C) c_int {
+            const state = @fieldParentPtr(State, "vtab", vtab);
+
+            var arena = heap.ArenaAllocator.init(state.allocator);
+            defer arena.deinit();
+            var cb_ctx = CallbackContext{ .arena = &arena };
+
+            var values = @as([*c]?*c.sqlite3_value, @ptrCast(argv))[0..@intCast(argc)];
+            state.table.update(&cb_ctx, @ptrCast(row_id_ptr), values) catch {
+                // TODO how to set the error message?
+                //err_str.* = dupeToSQLiteString(cb_ctx.error_message);
+                return c.SQLITE_ERROR;
+            };
+
+            return c.SQLITE_OK;
+        }
+
         // fn xBestIndex(
         //     vtab: [*c]c.sqlite3_vtab,
         //     index_info_ptr: [*c]c.sqlite3_index_info,
@@ -539,7 +562,6 @@ pub fn VirtualTable(comptime Table: type) type {
         // ) callconv(.C) c_int {
         // }
     };
-
 }
 
 fn dupeToSQLiteString(s: []const u8) [*c]const u8 {

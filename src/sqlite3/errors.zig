@@ -1,3 +1,6 @@
+//! Zigify sqlite error codes. This is mostly taken from
+//! [zig-sqlite](https://github.com/vrischmann/zig-sqlite)
+
 const std = @import("std");
 const mem = std.mem;
 

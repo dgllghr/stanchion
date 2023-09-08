@@ -1,7 +1,7 @@
 const build_options = @import("build_options");
 
 pub const c = if (build_options.loadable_extension)
-    @import("./c/loadable_extension.zig")
+    @import("c/loadable_extension.zig")
 else
     @cImport({
         @cInclude("sqlite3.h");

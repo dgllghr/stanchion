@@ -1,5 +1,11 @@
-const c = @import("./c.zig").c;
-const errors = @import("./errors.zig");
+//! A thin wrapper over a sqlite statement. Since this is a struct that only contains a
+//! pointer, values of type `Stmt` should be passed by value rather than by pointer. A
+//! `Stmt` is highly stateful. First set parameters with `bind` or `bindNull`. Then,
+//! call `exec` followed by calls to `next` and `read` to get results. Finally, call
+//! `reset` before reusing the statement or `deinit` to destroy the statement.
+
+const c = @import("c.zig").c;
+const errors = @import("errors.zig");
 
 const Self = @This();
 
@@ -29,6 +35,8 @@ pub fn deinit(self: Self) void {
     _ = c.sqlite3_finalize(self.stmt);
 }
 
+/// Resets both bound parameters and the execution state. This is unlike the sqlite
+/// API where bound parameters and execution state are reset separately.
 pub fn reset(self: Self) !void {
     var res = c.sqlite3_clear_bindings(self.stmt);
     if (res != c.SQLITE_OK) {

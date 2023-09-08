@@ -1,6 +1,6 @@
-const c = @import("./c.zig").c;
-const errors = @import("./errors.zig");
-const Conn = @import("./Conn.zig");
+const c = @import("c.zig").c;
+const errors = @import("errors.zig");
+const Conn = @import("Conn.zig");
 
 const Self = @This();
 

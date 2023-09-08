@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-const Conn = @import("./Conn.zig");
+const Conn = @import("Conn.zig");
 
 test "statement" {
     const conn = try Conn.openInMemory();
