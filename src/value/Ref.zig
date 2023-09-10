@@ -15,6 +15,10 @@ pub fn isNull(self: Self) bool {
     return self.valueType() == .Null;
 }
 
+pub fn asBool(self: Self) bool {
+    return c.sqlite3_value_int(self.value) != 0;
+}
+
 pub fn asI32(self: Self) i32 {
     return @intCast(c.sqlite3_value_int(self.value));
 }

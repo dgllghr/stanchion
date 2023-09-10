@@ -7,10 +7,11 @@ const Stmt = @import("../sqlite3/Stmt.zig");
 const ValueType = @import("./value_type.zig").ValueType;
 const ValueRef = @import("./Ref.zig");
 
-pub const OwnedValue = union(ValueType) {
+pub const OwnedValue = union(enum) {
     const Self = @This();
 
     Null,
+    Boolean: bool,
     Integer: i64,
     Float: f64,
     Text: []const u8,
@@ -18,24 +19,35 @@ pub const OwnedValue = union(ValueType) {
 
     pub fn deinit(self: *Self, allocator: Allocator) void {
         switch (self) {
-            .Null, .Integer, .Float => {},
+            .Null, .Boolean, .Integer, .Float => {},
             else => |bytes| allocator.free(bytes),
         }
     }
 
     pub fn valueType(self: Self) ValueType {
-        return meta.activeTag(self);
+        switch (self) {
+            .Null => ValueType.Null,
+            .Boolean => ValueType.Integer,
+            .Integer => ValueType.Integer,
+            .Float => ValueType.Float,
+            .Text => ValueType.Text,
+            .Blob => ValueType.Blob,
+        }
     }
 
     pub fn isNull(self: Self) bool {
         return self == .Null;
     }
 
+    pub fn asBool(self: Self) bool {
+        return self.Boolean;
+    }
+
     pub fn asI32(self: Self) i32 {
         return @intCast(self.Integer);
     }
 
-    pub fn asI64(self: Self) i62 {
+    pub fn asI64(self: Self) i64 {
         return self.Integer;
     }
 
@@ -54,6 +66,7 @@ pub const OwnedValue = union(ValueType) {
     pub fn bind(self: Self, stmt: Stmt, index: usize) !void {
         switch (self) {
             .Null => try stmt.bindNull(index),
+            .Boolean => |v| try stmt.bind(.Int32, index, if (v) 1 else 0),
             .Integer => |v| try stmt.bind(.Int64, index, v),
             .Float => |v| try stmt.bind(.Float, index, v),
             .Text => |v| try stmt.bind(.Text, index, v),
