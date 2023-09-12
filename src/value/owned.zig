@@ -25,14 +25,14 @@ pub const OwnedValue = union(enum) {
     }
 
     pub fn valueType(self: Self) ValueType {
-        switch (self) {
+        return switch (self) {
             .Null => ValueType.Null,
             .Boolean => ValueType.Integer,
             .Integer => ValueType.Integer,
             .Float => ValueType.Float,
             .Text => ValueType.Text,
             .Blob => ValueType.Blob,
-        }
+        };
     }
 
     pub fn isNull(self: Self) bool {

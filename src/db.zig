@@ -37,16 +37,9 @@ pub const Migrations = struct {
         \\  PRIMARY KEY (table_id, rank)
         \\) STRICT, WITHOUT ROWID
         ,
-        \\CREATE TABLE _stanchion_stripes (
-        \\  id INTEGER NOT NULL PRIMARY KEY,
-        \\  stripe BLOB NOT NULL            
-        \\) STRICT
-        ,
         \\CREATE TABLE _stanchion_segments (
         \\  id INTEGER NOT NULL PRIMARY KEY,
-        \\  present_stripe_id INTEGER NULL,
-        \\  primary_stripe_id INTEGER NULL,
-        \\  secondary_stripe_id INTEGER NULL    
+        \\  segment BLOB NOT NULL
         \\) STRICT
     };
 

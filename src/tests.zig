@@ -15,6 +15,8 @@ comptime {
     _ = @import("./stripe/optimizer.zig");
     _ = @import("./stripe.zig");
 
+    _ = @import("segment.zig");
+
     _ = @import("./db.zig");
     _ = @import("./row_group.zig");
     _ = @import("./Table.zig");
