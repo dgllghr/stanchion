@@ -18,6 +18,6 @@ comptime {
     _ = @import("segment.zig");
 
     _ = @import("./db.zig");
-    _ = @import("./row_group.zig");
+    _ = @import("row_group.zig").RowGroups;
     _ = @import("./Table.zig");
 }

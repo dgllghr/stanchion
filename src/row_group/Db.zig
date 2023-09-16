@@ -6,34 +6,32 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const Conn = @import("../sqlite3/Conn.zig");
 const Stmt = @import("../sqlite3/Stmt.zig");
 
-const RowGroup = @import("./RowGroup.zig");
-const Schema = @import("../schema.zig").Schema;
+const s = @import("../schema.zig");
+const Schema = s.Schema;
+const DataType = s.ColumnType.DataType;
 
-const Error = @import("./error.zig").Error;
+const RowGroup = @import("RowGroup.zig");
 
 const Self = @This();
 
 conn: Conn,
 table_name: []const u8,
-schema: *const Schema,
+columns_len: usize,
+sort_key_len: usize,
 insert_row_group: ?Stmt,
-find_row_group: ?Stmt,
 
 pub fn init(conn: Conn, table_name: []const u8, schema: *const Schema) Self {
     return .{
         .conn = conn,
         .table_name = table_name,
-        .schema = schema,
+        .columns_len = schema.columns.items.len,
+        .sort_key_len = schema.sort_key.items.len,
         .insert_row_group = null,
-        .find_row_group = null,
     };
 }
 
 pub fn deinit(self: *Self) void {
     if (self.insert_row_group) |stmt| {
-        stmt.deinit();
-    }
-    if (self.find_row_group) |stmt| {
         stmt.deinit();
     }
 }
@@ -61,18 +59,16 @@ pub fn insertRowGroup(
     row_group: *RowGroup,
 ) !void {
     if (self.insert_row_group == null) {
-        const sort_key_len = self.schema.sort_key.items.len;
-        const columns_len = self.schema.columns.items.len;
         const query = try fmt.allocPrintZ(allocator,
             \\INSERT INTO "_stanchion_{s}_row_groups" (
             \\  id, rowid_segment_id, record_count, {s}, {s}
             \\) VALUES (?, ?, ?, {s}, {s})
         , .{
             self.table_name,
-            SortKeyColumnListFormatter{ .len = sort_key_len },
-            SegmentIdColumnListFormatter{ .len = columns_len },
-            ParameterListFormatter{ .len = sort_key_len },
-            ParameterListFormatter{ .len = columns_len },
+            SortKeyColumnListFormatter{ .len = self.sort_key_len },
+            SegmentIdColumnListFormatter{ .len = self.columns_len },
+            ParameterListFormatter{ .len = self.sort_key_len },
+            ParameterListFormatter{ .len = self.columns_len },
         });
         defer allocator.free(query);
         self.insert_row_group = try self.conn.prepare(query);
@@ -92,53 +88,68 @@ pub fn insertRowGroup(
     try stmt.reset();
 }
 
-pub fn findRowGroup(
-    self: *Self,
+pub fn createTable(
     allocator: Allocator,
-    sort_key: anytype,
-) !RowGroup {
-    const columns_len = self.schema.columns.items.len;
-    if (self.find_row_group == null) {
-        const sort_key_len = self.schema.sort_key.items.len;
-        // TODO explore optimizing this query
-        const query = try fmt.allocPrintZ(allocator,
-            \\SELECT id, record_count, rowid_segment_id, {s}
-            \\FROM "_stanchion_{s}_row_groups"
-            \\WHERE ({s}) <= ({s})
-            \\ORDER BY {s} DESC
-            \\LIMIT 1
-        , .{
-            SegmentIdColumnListFormatter{ .len = columns_len },
-            self.table_name,
-            SortKeyColumnListFormatter{ .len = sort_key_len },
-            ParameterListFormatter{ .len = sort_key_len },
-            SortKeyColumnListFormatter{ .len = sort_key_len },
-        });
-        defer allocator.free(query);
-        self.find_row_group = try self.conn.prepare(query);
-    }
-
-    const stmt = self.find_row_group.?;
-    for (sort_key, 1..) |sk_value, i| {
-        try sk_value.bind(stmt, i);
-    }
-    if (!try stmt.next()) {
-        // Assumes that there is a row group with the minimum sort key so that a row
-        // group will always be found after the first row group is added
-        return Error.EmptyRowGroups;
-    }
-    var row_group = RowGroup{
-        .id = stmt.read(.Int64, false, 0),
-        .record_count = stmt.read(.Int64, false, 1),
-        .rowid_segment_id = stmt.read(.Int64, false, 2),
-        .column_segment_ids = try allocator.alloc(i64, columns_len),
+    conn: Conn,
+    table_name: []const u8,
+    schema: *const Schema,
+) !void {
+    const ddl_formatter = DdlFormatter{
+        .table_name = table_name,
+        .schema = schema,
     };
-    for (0..columns_len) |idx| {
-        row_group.column_segment_ids[idx] = stmt.read(.Int64, false, idx + 3);
-    }
-    try stmt.reset();
-    return row_group;
+    const ddl = try fmt.allocPrintZ(allocator, "{s}", .{ddl_formatter});
+    defer allocator.free(ddl);
+    try conn.exec(ddl);
 }
+
+const DdlFormatter = struct {
+    table_name: []const u8,
+    schema: *const Schema,
+
+    pub fn format(
+        self: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        try writer.print(
+            \\CREATE TABLE "_stanchion_{s}_row_groups" (
+        ,
+            .{self.table_name},
+        );
+        for (self.schema.sort_key.items, 0..) |_, sk_rank| {
+            const col = &self.schema.columns.items[sk_rank];
+            const data_type = DataType.SqliteFormatter{
+                .data_type = col.column_type.data_type,
+            };
+            try writer.print(
+                \\sk_value_{d} {s} NOT NULL,
+            , .{ sk_rank, data_type });
+        }
+        // The `id` field is used in two ways:
+        // 1. a global identifier for a row so changes to the row group can be
+        //    expressed more easily
+        // 2. A way to distinguish row groups with the same starting sort key. The
+        //    id is always increased so splitting a row group puts the new row group
+        //    after the existing one.
+        try writer.print("id INTEGER NOT NULL,", .{});
+        try writer.print("rowid_segment_id INTEGER NOT NULL,", .{});
+        for (self.schema.columns.items) |*col| {
+            try writer.print(
+                \\column_{d}_segment_id INTEGER NOT NULL,
+            , .{col.rank});
+        }
+        try writer.print("record_count INTEGER NOT NULL,", .{});
+        try writer.print("UNIQUE (id),", .{});
+        try writer.print("PRIMARY KEY (", .{});
+        for (self.schema.sort_key.items, 0..) |_, sk_rank| {
+            try writer.print("sk_value_{d},", .{sk_rank});
+        }
+        try writer.print("id)", .{});
+        try writer.print(") STRICT, WITHOUT ROWID", .{});
+    }
+};
 
 const SegmentIdColumnListFormatter = struct {
     len: usize,
