@@ -22,7 +22,7 @@ pub fn changeType(self: Self) ChangeType {
     if (self.values.len == 0) {
         return .Delete;
     }
-    if (self.readRowid().isNull()) {
+    if ((ValueRef{ .value = self.values[0] }).isNull()) {
         return .Insert;
     }
     return .Update;
