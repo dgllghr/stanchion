@@ -1,12 +1,9 @@
 const c = @import("../sqlite3/c.zig").c;
-
-const ValueRef = @import("./Ref.zig");
+const ValueRef = @import("value.zig").Ref;
 
 const Self = @This();
 
 values: []?*c.sqlite3_value,
-
-pub const Value = ValueRef;
 
 pub const ChangeType = enum {
     Insert,

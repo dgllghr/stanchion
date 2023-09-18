@@ -4,21 +4,20 @@ const mem = std.mem;
 const Allocator = std.mem.Allocator;
 const Type = std.builtin.Type;
 
-const Conn = @import("./sqlite3/Conn.zig");
-const Stmt = @import("./sqlite3/Stmt.zig");
-const vtab = @import("./sqlite3/vtab.zig");
-const sqlite_c = @import("./sqlite3/c.zig").c;
+const ChangeSet = @import("sqlite3/ChangeSet.zig");
+const Conn = @import("sqlite3/Conn.zig");
+const Stmt = @import("sqlite3/Stmt.zig");
+const vtab = @import("sqlite3/vtab.zig");
+const sqlite_c = @import("sqlite3/c.zig").c;
 
-const DbError = @import("./db.zig").Error;
-const Migrations = @import("./db.zig").Migrations;
+const DbError = @import("db.zig").Error;
+const Migrations = @import("db.zig").Migrations;
 
-const schema = @import("./schema.zig");
+const schema = @import("schema.zig");
 const SchemaDef = schema.SchemaDef;
 const Schema = schema.Schema;
 
-const ChangeSet = @import("./value/ChangeSet.zig");
-
-const RowGroups = @import("./row_group.zig").RowGroups;
+const PrimaryIndex = @import("primary_index.zig").PrimaryIndex;
 
 const Self = @This();
 
@@ -30,7 +29,7 @@ allocator: Allocator,
 id: i64,
 name: []const u8,
 schema: Schema,
-row_groups: RowGroups,
+primary_index: PrimaryIndex,
 
 pub const InitError = error{
     NoColumns,
@@ -72,7 +71,7 @@ pub fn create(
     const table_id = try db.table.createTable(name);
     var s = try Schema.create(allocator, &db.schema, table_id, def);
 
-    const row_groups = try RowGroups.create(cb_ctx.arena, conn, name, &s);
+    const primary_index = try PrimaryIndex.create(allocator, conn, name, &s);
 
     return .{
         .allocator = allocator,
@@ -80,7 +79,7 @@ pub fn create(
         .id = table_id,
         .name = name,
         .schema = s,
-        .row_groups = row_groups,
+        .primary_index = primary_index,
     };
 }
 
@@ -125,6 +124,8 @@ pub fn connect(
         return InitError.UnsupportedDb;
     }
 
+    // TODO set error message for all try below
+
     const name = try allocator.dupe(u8, args[2]);
     errdefer allocator.free(name);
 
@@ -136,7 +137,7 @@ pub fn connect(
     const table_id = try db.table.loadTable(name);
     const s = try Schema.load(allocator, &db.schema, table_id);
 
-    const row_groups = try RowGroups.open(cb_ctx.arena, conn, name, &s);
+    const primary_index = try PrimaryIndex.open(allocator, conn, name, &s, 1);
 
     return .{
         .allocator = allocator,
@@ -144,40 +145,47 @@ pub fn connect(
         .id = table_id,
         .name = name,
         .schema = s,
-        .row_groups = row_groups,
+        .primary_index = primary_index,
     };
 }
 
 pub fn disconnect(self: *Self) void {
-    self.allocator.free(self.name);
-    self.schema.deinit(self.allocator);
+    self.primary_index.deinit();
     self.db.table.deinit();
     self.db.schema.deinit();
+    self.schema.deinit(self.allocator);
+    self.allocator.free(self.name);
 }
 
 pub fn destroy(self: *Self) void {
     // TODO delete all data
-    self.allocator.free(self.name);
-    self.schema.deinit(self.allocator);
-    self.db.table.deinit();
-    self.db.schema.deinit();
+    self.disconnect();
 }
 
 pub fn ddl(_: *Self, allocator: Allocator) ![:0]const u8 {
     return fmt.allocPrintZ(allocator, "CREATE TABLE x (foo INTEGER)", .{});
 }
 
-pub fn update(_: *Self, _: *vtab.CallbackContext, _: ?*i64, values: []?*sqlite_c.sqlite3_value) !void {
-    _ = ChangeSet.init(values);
+pub fn update(
+    self: *Self,
+    cb_ctx: *vtab.CallbackContext,
+    _: ?*i64,
+    change_set: ChangeSet,
+) !void {
+    if (change_set.changeType() == .Insert) {
+        self.primary_index.insert(change_set) catch |err| {
+            cb_ctx.setErrorMessage("failed to log insert", .{});
+            return err;
+        };
+        return;
+    }
+    @panic("todo");
 }
 
 // pub fn bestIndex(self: *Self) !void {
 // }
 
 // pub fn open(self: *Self) !Cursor {
-// }
-
-// pub fn update(self: *Self) !i64 {
 // }
 
 const Db = struct {

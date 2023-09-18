@@ -11,6 +11,7 @@ const testing = std.testing;
 const c = @import("c.zig").c;
 const versionGreaterThanOrEqualTo = @import("c.zig").versionGreaterThanOrEqualTo;
 
+const ChangeSet = @import("ChangeSet.zig");
 const Conn = @import("Conn.zig");
 
 /// CallbackContext is only valid for the duration of a callback from sqlite into the
@@ -496,7 +497,9 @@ pub fn VirtualTable(comptime Table: type) type {
             defer arena.deinit();
             var cb_ctx = CallbackContext{ .arena = &arena };
 
-            var values = @as([*c]?*c.sqlite3_value, @ptrCast(argv))[0..@intCast(argc)];
+            var values = ChangeSet.init(
+                @as([*c]?*c.sqlite3_value, @ptrCast(argv))[0..@intCast(argc)],
+            );
             state.table.update(&cb_ctx, @ptrCast(row_id_ptr), values) catch {
                 // TODO how to set the error message?
                 //err_str.* = dupeToSQLiteString(cb_ctx.error_message);

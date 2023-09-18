@@ -2,10 +2,10 @@ const std = @import("std");
 const meta = std.meta;
 const Allocator = std.mem.Allocator;
 
-const Stmt = @import("../sqlite3/Stmt.zig");
-
-const ValueType = @import("./value_type.zig").ValueType;
-const ValueRef = @import("./Ref.zig");
+const Stmt = @import("sqlite3/Stmt.zig");
+const sqlite_value = @import("sqlite3/value.zig");
+const ValueType = sqlite_value.ValueType;
+const ValueRef = sqlite_value.Ref;
 
 pub const OwnedValue = union(enum) {
     const Self = @This();

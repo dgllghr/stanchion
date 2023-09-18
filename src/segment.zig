@@ -294,7 +294,7 @@ const PrimaryEncoder = union(enum) {
 };
 
 test "segment planner" {
-    const OwnedValue = @import("value/owned.zig").OwnedValue;
+    const OwnedValue = @import("value.zig").OwnedValue;
 
     var planner = Planner.init(.{
         .data_type = .Integer,
@@ -310,7 +310,7 @@ test "segment planner" {
 }
 
 test "segment writer" {
-    const OwnedValue = @import("value/owned.zig").OwnedValue;
+    const OwnedValue = @import("value.zig").OwnedValue;
 
     const conn = try @import("sqlite3/Conn.zig").openInMemory();
     defer conn.close();
