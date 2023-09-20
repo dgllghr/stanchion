@@ -1,3 +1,11 @@
+//! This whole system requires that all entries are assigned a rowid where later entries
+//! have a higher rowid than earlier entries. This does limit a table to at most
+//! 9,223,372,036,854,775,807 records. Row group entries are given the rowid of the first
+//! record in the row group. The rowid is necessary because the sort key does not
+//! guarantee uniqueness, so multiple row groups may have the same starting sort key.
+//! Using a monotonic rowid ensures that later records are placed into the last row group
+//! of a set of row groups with the same sort key.
+
 const std = @import("std");
 const fmt = std.fmt;
 const mem = std.mem;
@@ -5,6 +13,7 @@ const Allocator = std.mem.Allocator;
 
 const Conn = @import("sqlite3/Conn.zig");
 const Stmt = @import("sqlite3/Stmt.zig");
+const sqlite_c = @import("sqlite3/c.zig").c;
 
 const StmtCell = @import("StmtCell.zig");
 
@@ -91,6 +100,20 @@ pub const PrimaryIndex = struct {
         const rowid = self.next_rowid;
         self.next_rowid += 1;
         try self.db.insertInsertEntry(rowid, values);
+
+        // TODO only do the check and merge at the end of a transaction
+
+        // Check if the row group should be merged
+        var row_group_handle = try self.db.findRowGroup(self.allocator, values, rowid);
+        defer if (row_group_handle) |*rg| {
+            rg.deinit(self.allocator);
+        };
+
+        const staged_inserts_count = try self.db.countRowGroupInserts(&row_group_handle);
+        // TODO make this threshold configurable
+        if (staged_inserts_count > 1000) {
+            // TODO merge the row group
+        }
     }
 
     test "insert log: log insert" {
@@ -157,6 +180,9 @@ const Db = struct {
     columns_len: usize,
     sort_key: []const usize,
     insert_entry: StmtCell,
+    find_row_group: StmtCell,
+    iterator: StmtCell,
+    iterator_from_start: StmtCell,
 
     pub fn init(
         allocator: Allocator,
@@ -166,13 +192,6 @@ const Db = struct {
     ) !Self {
         const columns_len = schema.columns.items.len;
         const sort_key = schema.sort_key.items;
-
-        // TODO update this comment
-        // Use the fact that row groups created later always have a larger id to always
-        // insert into the newest row group when multiple row groups have the same
-        // starting sort key. Because of how merging the insert log works, the newest
-        // row group is the only one of a group of row groups with the same starting sort
-        // key that may have capacity for new records.
 
         const insert_entry_query = try fmt.allocPrintZ(allocator,
             \\INSERT INTO "_stanchion_{s}_primary_index" (
@@ -188,17 +207,66 @@ const Db = struct {
         });
         const insert_entry = StmtCell.init(insert_entry_query);
 
+        const find_row_group_query = try fmt.allocPrintZ(allocator,
+            \\  SELECT {s}, rowid, record_count
+            \\  FROM "_stanchion_{s}_primary_index"
+            \\  WHERE ({s}, rowid) <= ({s}, ?) AND entry_type = {d}
+            \\  ORDER BY {s}, rowid DESC
+            \\  LIMIT 1
+        , .{
+            ColumnListFormatter("sk_value_{d}"){ .len = sort_key.len },
+            table_name,
+            ColumnListFormatter("sk_value_{d}"){ .len = sort_key.len },
+            ParameterListFormatter{ .len = sort_key.len },
+            @intFromEnum(EntryType.RowGroup),
+            ColumnListFormatter("sk_value_{d} DESC"){ .len = sort_key.len },
+        });
+        const find_row_group = StmtCell.init(find_row_group_query);
+
+        const iterator_query = try fmt.allocPrintZ(allocator,
+            \\SELECT entry_type, record_count, rowid, rowid_segment_id, {s}, {s}
+            \\FROM "_stanchion_{s}_primary_index"
+            \\WHERE ({s}, rowid) >= ({s}, ?)
+            \\ORDER BY {s}, rowid DESC
+        , .{
+            ColumnListFormatter("sk_value_{d}"){ .len = sort_key.len },
+            ColumnListFormatter("col_{d}"){ .len = columns_len },
+            table_name,
+            ColumnListFormatter("sk_value_{d}"){ .len = sort_key.len },
+            ParameterListFormatter{ .len = sort_key.len },
+            ColumnListFormatter("sk_value_{d} DESC"){ .len = sort_key.len },
+        });
+        const iterator = StmtCell.init(iterator_query);
+
+        const iterator_from_start_query = try fmt.allocPrintZ(allocator,
+            \\SELECT entry_type, record_count, rowid, rowid_segment_id, {s}, {s}
+            \\FROM "_stanchion_{s}_primary_index"
+            \\ORDER BY {s}, rowid DESC
+        , .{
+            ColumnListFormatter("sk_value_{d}"){ .len = sort_key.len },
+            ColumnListFormatter("col_{d}"){ .len = columns_len },
+            table_name,
+            ColumnListFormatter("sk_value_{d} DESC"){ .len = sort_key.len },
+        });
+        const iterator_from_start = StmtCell.init(iterator_from_start_query);
+
         return .{
             .conn = conn,
             .table_name = table_name,
             .columns_len = columns_len,
             .sort_key = sort_key,
             .insert_entry = insert_entry,
+            .find_row_group = find_row_group,
+            .iterator = iterator,
+            .iterator_from_start = iterator_from_start,
         };
     }
 
     pub fn deinit(self: *Self, allocator: Allocator) void {
         self.insert_entry.deinit(allocator);
+        self.find_row_group.deinit(allocator);
+        self.iterator.deinit(allocator);
+        self.iterator_from_start.deinit(allocator);
     }
 
     pub fn insertInsertEntry(
@@ -253,6 +321,113 @@ const Db = struct {
         try stmt.exec();
     }
 
+    pub fn findRowGroup(
+        self: *Self,
+        allocator: Allocator,
+        row: anytype,
+        rowid: i64,
+    ) !?RowGroupHandle {
+        const stmt = try self.find_row_group.getStmt(self.conn);
+        errdefer self.find_row_group.reset();
+
+        for (self.sort_key, 1..) |col_idx, idx| {
+            try row.readValue(col_idx).bind(stmt, idx);
+        }
+        try stmt.bind(.Int64, self.sort_key.len + 1, rowid);
+
+        const has_row_group = try stmt.next();
+        if (!has_row_group) {
+            self.find_row_group.reset();
+            return null;
+        }
+
+        var rg_sort_key = try allocator.alloc(
+            ?*sqlite_c.sqlite3_value,
+            self.sort_key.len,
+        );
+        for (0..self.sort_key.len) |idx| {
+            rg_sort_key[idx] = stmt.readSqliteValue(idx);
+        }
+        const rg_rowid = stmt.read(.Int64, false, self.sort_key.len);
+        const record_count: u32 = @intCast(
+            stmt.read(.Int64, false, self.sort_key.len + 1),
+        );
+
+        return .{
+            .cell = &self.find_row_group,
+            .sort_key = rg_sort_key,
+            .rowid = rg_rowid,
+            .record_count = record_count,
+        };
+    }
+
+    pub const RowGroupHandle = struct {
+        cell: *StmtCell,
+        sort_key: []?*sqlite_c.sqlite3_value,
+        rowid: i64,
+        record_count: u32,
+
+        pub fn deinit(self: *@This(), allocator: Allocator) void {
+            self.cell.reset();
+            // TODO deinit sqlite values?
+            allocator.free(self.sort_key);
+        }
+    };
+
+    /// Counts the number of buffered insert entries in the row group containing the
+    /// provided sort key, rowid combination
+    pub fn countRowGroupInserts(
+        self: *Self,
+        row_group_handle: *const ?RowGroupHandle,
+    ) !u32 {
+        var stmt: Stmt = undefined;
+        if (row_group_handle.*) |handle| {
+            stmt = try self.iterator.getStmt(self.conn);
+            errdefer self.iterator.reset();
+
+            for (0..self.sort_key.len) |idx| {
+                try stmt.bindSqliteValue(idx, handle.sort_key[idx]);
+            }
+            try stmt.bind(.Int64, self.sort_key.len, handle.rowid);
+
+            const row_group_exists = try stmt.next();
+            std.debug.assert(row_group_exists);
+        } else {
+            stmt = try self.iterator_from_start.getStmt(self.conn);
+        }
+
+        var iter = RowGroupInsertsIterator{
+            .stmt = stmt,
+            .cell = if (row_group_handle.* != null) &self.iterator else &self.iterator,
+        };
+        defer iter.deinit();
+
+        var count: u32 = 0;
+        while (try iter.next()) {
+            count += 1;
+        }
+        return count;
+    }
+
+    /// Iterates until a row group entry is found or the end of the table is reached
+    const RowGroupInsertsIterator = struct {
+        stmt: Stmt,
+        cell: *StmtCell,
+
+        fn deinit(self: *@This()) void {
+            self.cell.reset();
+        }
+
+        fn next(self: *@This()) !bool {
+            const has_next = try self.stmt.next();
+            if (!has_next) {
+                return false;
+            }
+            const entry_type: EntryType = @enumFromInt(self.stmt.read(.Int32, false, 0));
+            return entry_type != .RowGroup;
+        }
+    };
+
     pub fn createTable(
         allocator: Allocator,
         conn: Conn,
@@ -290,7 +465,7 @@ const Db = struct {
                 };
                 try writer.print("sk_value_{d} {s} NOT NULL,", .{ sk_rank, data_type });
             }
-            // The `col_N` columns are uesd for storing values for inserts entries and
+            // The `col_N` columns are uesd for storing values for insert entries and
             // segment IDs for row group entries
             for (0..self.schema.columns.items.len) |rank| {
                 try writer.print("col_{d} ANY NULL,", .{rank});
