@@ -15,24 +15,42 @@ const Tag = enum {
 pub const Decoder = union(Tag) {
     const Self = @This();
 
-    direct: direct.Decoder,
+    direct: direct.Decoder(u8, readDirect),
     constant: constant.Decoder(u8, readDirect),
 
-    pub fn init(encoding: Encoding, blob: anytype) !Self {
+    pub fn init(encoding: Encoding) !Self {
         return switch (encoding) {
             .Direct => .{
-                .bit_packed = try constant.Decoder.init(blob),
+                .direct = direct.Decoder(u8, readDirect).init(),
             },
             .Constant => .{
-                .constant = try constant.Decoder(bool, readDirect).init(blob),
+                .constant = constant.Decoder(u8, readDirect).init(),
             },
             else => return Error.InvalidEncoding,
         };
     }
 
-    pub fn decode(self: *Self, blob: anytype, index: usize) !u8 {
+    pub fn begin(self: *Self, blob: anytype) !void {
         switch (self.*) {
-            inline else => |*d| return d.decode(blob, index),
+            inline else => |*d| try d.begin(blob),
+        }
+    }
+
+    pub fn decode(self: *Self, blob: anytype) !u8 {
+        switch (self.*) {
+            inline else => |*d| return d.decode(blob),
+        }
+    }
+
+    pub fn decodeAll(self: *Self, blob: anytype, dst: []u8) !void {
+        switch (self.*) {
+            inline else => |*d| try d.decodeAll(blob, dst),
+        }
+    }
+
+    pub fn skip(self: *Self, n: u32) void {
+        switch (self.*) {
+            inline else => |*d| d.skip(n),
         }
     }
 };

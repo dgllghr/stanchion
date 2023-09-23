@@ -18,21 +18,39 @@ pub const Decoder = union(Tag) {
     bit_packed: bit_packed_bool.Decoder,
     constant: constant.Decoder(bool, readDirect),
 
-    pub fn init(encoding: Encoding, blob: anytype) !Self {
+    pub fn init(encoding: Encoding) !Self {
         return switch (encoding) {
             .Constant => .{
-                .constant = try constant.Decoder(bool, readDirect).init(blob),
+                .constant = constant.Decoder(bool, readDirect).init(),
             },
             .BitPacked => .{
-                .bit_packed = try bit_packed_bool.Decoder.init(blob),
+                .bit_packed = bit_packed_bool.Decoder.init(),
             },
             else => return Error.InvalidEncoding,
         };
     }
 
-    pub fn decode(self: *Self, blob: anytype, index: usize) !bool {
+    pub fn begin(self: *Self, blob: anytype) !void {
         switch (self.*) {
-            inline else => |*d| return d.decode(blob, index),
+            inline else => |*d| try d.begin(blob),
+        }
+    }
+
+    pub fn decode(self: *Self, blob: anytype) !bool {
+        switch (self.*) {
+            inline else => |*d| return d.decode(blob),
+        }
+    }
+
+    pub fn decodeAll(self: *Self, blob: anytype, dst: []bool) !void {
+        switch (self.*) {
+            inline else => |*d| try d.decodeAll(blob, dst),
+        }
+    }
+
+    pub fn skip(self: *Self, n: u32) void {
+        switch (self.*) {
+            inline else => |*d| d.skip(n),
         }
     }
 };

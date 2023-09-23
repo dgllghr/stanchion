@@ -20,21 +20,39 @@ pub const Decoder = union(Tag) {
     constant: constant.Decoder(i64, readDirect),
     direct: direct.Decoder(i64, readDirect),
 
-    pub fn init(encoding: Encoding, blob: anytype) !Self {
+    pub fn init(encoding: Encoding) !Self {
         return switch (encoding) {
             .Constant => .{
-                .constant = try constant.Decoder(i64, readDirect).init(blob),
+                .constant = constant.Decoder(i64, readDirect).init(),
             },
             .Direct => .{
-                .direct = try direct.Decoder.init(blob),
+                .direct = direct.Decoder(i64, readDirect).init(),
             },
             else => return Error.InvalidEncoding,
         };
     }
 
-    pub fn decode(self: *Self, blob: anytype, index: usize) !bool {
+    pub fn begin(self: *Self, blob: anytype) !void {
         switch (self.*) {
-            inline else => |*d| return d.decode(blob, index),
+            inline else => |*d| try d.begin(blob),
+        }
+    }
+
+    pub fn decode(self: *Self, blob: anytype) !i64 {
+        switch (self.*) {
+            inline else => |*d| return d.decode(blob),
+        }
+    }
+
+    pub fn decodeAll(self: *Self, blob: anytype, dst: []i64) !void {
+        switch (self.*) {
+            inline else => |*d| try d.decodeAll(blob, dst),
+        }
+    }
+
+    pub fn skip(self: *Self, n: u32) void {
+        switch (self.*) {
+            inline else => |*d| d.skip(n),
         }
     }
 };
@@ -78,7 +96,7 @@ pub const Encoder = union(Tag) {
 };
 
 pub fn readDirect(v: *const [8]u8) i64 {
-    return std.mem.readIntLittle(v.*);
+    return std.mem.readIntLittle(i64, v);
 }
 
 pub fn writeDirect(v: i64) [8]u8 {

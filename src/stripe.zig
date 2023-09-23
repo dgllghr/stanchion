@@ -1,4 +1,4 @@
-//! pub const Validator = struct {
+//! pub const Validator = interface {
 //!     const Self = @This();
 //!
 //!     const Value;
@@ -19,7 +19,7 @@
 //!     fn end(self: Self) error{NotEncodable}!Valid(Encoder);
 //! };
 //!
-//! pub const Encoder = struct {
+//! pub const Encoder = interface {
 //!     const Self = @This();
 //!
 //!     const Value;
@@ -38,11 +38,25 @@
 //!     fn begin(self: *Self, blob: anytype) !bool;
 //!
 //!     /// Encode a single value at the end of the encoded values
-//!     pub fn encode(self: *Self, blob: anytype, value: Value) !void;
+//!     fn encode(self: *Self, blob: anytype, value: Value) !void;
 //!
 //!     /// Finish the encoding by writing any buffered data or other data required for
 //!     /// decoding
-//!     pub fn end(self: *Self, blob: anytype) !void;
+//!     fn end(self: *Self, blob: anytype) !void;
+//! };
+//!
+//! pub const Decoder = interface {
+//!     const Self = @This();
+//!
+//!     const Value;
+//!
+//!     fn begin(self: *Self, blob: anytype) !void;
+//!
+//!     fn decode(self: *Self, blob: anytype) !Value;
+//!
+//!     fn decodeAll(self: *Self, blob: anytype, dst: []Value) !void;
+//!
+//!     fn skip(self: *Self, n: u32) void;
 //! };
 
 pub const Encoding = @import("stripe/encoding.zig").Encoding;

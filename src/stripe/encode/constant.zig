@@ -16,15 +16,27 @@ pub fn Decoder(
 
         value: Value,
 
-        pub fn init(blob: anytype) !Self {
-            var buf: [@sizeOf(Value)]u8 = undefined;
-            try blob.readAt(buf[0..], 0);
-            return .{ .value = fromBytes(&buf) };
+        pub fn init() Self {
+            return .{ .value = undefined };
         }
 
-        pub fn decode(self: *Self, _: anytype, _: usize) !Value {
+        pub fn begin(self: *Self, blob: anytype) !void {
+            var buf: [@sizeOf(Value)]u8 = undefined;
+            try blob.readAt(buf[0..], 0);
+            self.value = fromBytes(&buf);
+        }
+
+        pub fn decode(self: *Self, _: anytype) !Value {
             return self.value;
         }
+
+        pub fn decodeAll(self: *Self, _: anytype, dst: []Value) !void {
+            for (dst) |*cell| {
+                cell.* = self.value;
+            }
+        }
+
+        pub fn skip(_: *Self, _: u32) void {}
     };
 }
 
@@ -112,6 +124,26 @@ pub fn Encoder(
 
         pub fn end(_: *Self, _: anytype) !void {}
     };
+}
+
+test "decoder" {
+    const MemoryBlob = @import("../../MemoryBlob.zig");
+
+    const allocator = std.testing.allocator;
+    const buf = try allocator.alloc(u8, 4);
+    defer allocator.free(buf);
+
+    const expected_value: u32 = 29;
+    mem.writeIntLittle(u32, buf[0..4], expected_value);
+
+    var blob = MemoryBlob{ .data = buf };
+    var decoder = Decoder(u32, readU32).init();
+    try decoder.begin(blob);
+
+    var value = try decoder.decode(blob);
+    try std.testing.expectEqual(@as(u32, 29), value);
+    value = try decoder.decode(blob);
+    try std.testing.expectEqual(@as(u32, 29), value);
 }
 
 fn readU32(buf: *const [4]u8) u32 {
