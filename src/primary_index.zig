@@ -21,6 +21,11 @@ const s = @import("schema.zig");
 const DataType = s.ColumnType.DataType;
 const Schema = s.Schema;
 
+const segment = @import("segment.zig");
+const SegmentDb = segment.Db;
+
+const RowGroup = @import("RowGroup.zig");
+
 pub const PrimaryIndex = struct {
     const Self = @This();
 
@@ -96,7 +101,7 @@ pub const PrimaryIndex = struct {
         self.db.deinit(self.allocator);
     }
 
-    pub fn insert(self: *Self, values: anytype) !void {
+    pub fn insert(self: *Self, values: anytype) !u32 {
         const rowid = self.next_rowid;
         self.next_rowid += 1;
         try self.db.insertInsertEntry(rowid, values);
@@ -112,8 +117,10 @@ pub const PrimaryIndex = struct {
         const staged_inserts_count = try self.db.countRowGroupInserts(&row_group_handle);
         // TODO make this threshold configurable
         if (staged_inserts_count > 1000) {
-            // TODO merge the row group
+            @panic("todo");
+            //try self.mergeRowGroup(&row_group_handle);
         }
+        return staged_inserts_count;
     }
 
     test "insert log: log insert" {
@@ -156,7 +163,7 @@ pub const PrimaryIndex = struct {
             .{ .Blob = "magnitude" },
             .{ .Integer = 100 },
         };
-        try primary_index.insert(OwnedRow{
+        _ = try primary_index.insert(OwnedRow{
             .rowid = null,
             .values = &row,
         });
@@ -165,7 +172,7 @@ pub const PrimaryIndex = struct {
             .{ .Blob = "amplitude" },
             .{ .Integer = 7 },
         };
-        try primary_index.insert(OwnedRow{
+        _ = try primary_index.insert(OwnedRow{
             .rowid = null,
             .values = &row,
         });
@@ -301,6 +308,7 @@ const Db = struct {
     pub fn insertRowGroupEntry(
         self: *Self,
         sort_key: anytype,
+        rowid: i64,
         row_group: *const RowGroup,
     ) !void {
         const stmt = try self.insert_entry.getStmt(self.conn);
@@ -308,7 +316,7 @@ const Db = struct {
 
         try EntryType.RowGroup.bind(stmt, 1);
         try stmt.bind(.Int64, 2, @intCast(row_group.record_count));
-        try stmt.bind(.Int64, 3, row_group.rowid);
+        try stmt.bind(.Int64, 3, rowid);
         try stmt.bind(.Int64, 4, row_group.rowid_segment_id);
         for (0..self.sort_key.len) |idx| {
             try sort_key.readValue(idx).bind(stmt, idx + 5);
@@ -380,6 +388,20 @@ const Db = struct {
         self: *Self,
         row_group_handle: *const ?RowGroupHandle,
     ) !u32 {
+        var iter = try self.rowGroupInserts(row_group_handle);
+        defer iter.deinit();
+
+        var count: u32 = 0;
+        while (try iter.next()) {
+            count += 1;
+        }
+        return count;
+    }
+
+    pub fn rowGroupInserts(
+        self: *Self,
+        row_group_handle: *const ?RowGroupHandle,
+    ) !RowGroupInsertsIterator {
         var stmt: Stmt = undefined;
         if (row_group_handle.*) |handle| {
             stmt = try self.iterator.getStmt(self.conn);
@@ -396,21 +418,16 @@ const Db = struct {
             stmt = try self.iterator_from_start.getStmt(self.conn);
         }
 
+        const cell = if (row_group_handle.* != null) &self.iterator else &self.iterator_from_start;
         var iter = RowGroupInsertsIterator{
             .stmt = stmt,
-            .cell = if (row_group_handle.* != null) &self.iterator else &self.iterator,
+            .cell = cell,
         };
-        defer iter.deinit();
-
-        var count: u32 = 0;
-        while (try iter.next()) {
-            count += 1;
-        }
-        return count;
+        return iter;
     }
 
     /// Iterates until a row group entry is found or the end of the table is reached
-    const RowGroupInsertsIterator = struct {
+    pub const RowGroupInsertsIterator = struct {
         stmt: Stmt,
         cell: *StmtCell,
 
@@ -418,7 +435,7 @@ const Db = struct {
             self.cell.reset();
         }
 
-        fn next(self: *@This()) !bool {
+        pub fn next(self: *@This()) !bool {
             const has_next = try self.stmt.next();
             if (!has_next) {
                 return false;
@@ -537,18 +554,5 @@ const EntryType = enum(u8) {
 
     fn bind(self: EntryType, stmt: Stmt, index: usize) !void {
         try stmt.bind(.Int32, index, @intCast(@intFromEnum(self)));
-    }
-};
-
-const RowGroup = struct {
-    const Self = @This();
-
-    rowid: i64,
-    rowid_segment_id: i64,
-    column_segment_ids: []i64,
-    record_count: u32,
-
-    pub fn deinit(self: *Self, allocator: Allocator) void {
-        allocator.free(self.column_segment_ids);
     }
 };

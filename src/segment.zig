@@ -2,6 +2,7 @@ const std = @import("std");
 const debug = std.debug;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
+const ArrayListUnmanaged = std.ArrayListUnmanaged;
 
 const Blob = @import("sqlite3/Blob.zig");
 const BlobSlice = Blob.BlobSlice;
@@ -11,17 +12,17 @@ const ColumnType = @import("schema/ColumnType.zig");
 const stripe = @import("stripe.zig");
 const Valid = stripe.Valid;
 
-const Db = @import("segment/Db.zig");
+pub const Db = @import("segment/Db.zig");
 const Header = @import("segment/Header.zig");
 
 pub const Handle = Db.Handle;
 
 /// A Planner analyzes the data that will go into a segment and determines the layout for
 /// the segment. The layout includes the size of the segment and the sizes and encodings
-/// of / the stripes within the segment. Create a Planner and feed the data that will go
-/// into / the segment by calling `next` on the values that will go into the segment (in
-/// order). / Then call `end` to create a `Plan`, which contains the layout and encoders
-/// for a / segment. Use the `Plan` to create a `Writer`, which writes the segment.
+/// of the stripes within the segment. Create a Planner and feed the data that will go
+/// into the segment by calling `next` on the values that will go into the segment (in
+/// order). Then call `end` to create a `Plan`, which contains the layout and encoders
+/// for a segment. Use the `Plan` to create a `Writer`, which writes the segment.
 pub const Planner = struct {
     const Self = @This();
 
@@ -260,7 +261,10 @@ pub const Writer = struct {
                     const bytes =
                         if (value_type == .Text) value.asText() else value.asBlob();
                     var length = self.length.?;
-                    try length.encoder.encode(&length.blob, @as(i64, @intCast(bytes.len)));
+                    try length.encoder.encode(
+                        &length.blob,
+                        @as(i64, @intCast(bytes.len)),
+                    );
                     for (bytes) |b| {
                         try byte_encoder.encode(&primary.blob, b);
                     }
@@ -353,3 +357,258 @@ test "segment writer" {
     }
     _ = try writer.end();
 }
+
+/// TODO it would likely be more efficient to make this an union(enum) at the top level
+///      so that there is a single branch per function call
+const Reader = struct {
+    const Self = @This();
+
+    handle: Handle,
+    present: ?StripeReader(stripe.Bool.Decoder),
+    length: ?StripeReader(stripe.Int.Decoder),
+    primary: ?StripeReader(PrimaryDecoder),
+
+    fn StripeReader(comptime Decoder: type) type {
+        return struct {
+            blob: BlobSlice(Blob),
+            decoder: Decoder,
+        };
+    }
+
+    pub fn open(db: *Db, data_type: ColumnType.DataType, segment_id: i64) !Self {
+        var handle = try db.open(segment_id);
+        errdefer handle.close();
+
+        const header = try Header.read(handle.blob);
+        var present: ?StripeReader(stripe.Bool.Decoder) = null;
+        var length: ?StripeReader(stripe.Int.Decoder) = null;
+        var primary: ?StripeReader(PrimaryDecoder) = null;
+
+        var offset: u32 = Header.encoded_len;
+        if (header.present_stripe.byte_len > 0) {
+            const blob = handle.blob.sliceFrom(offset);
+            var decoder = try stripe.Bool.Decoder.init(
+                header.present_stripe.encoding,
+            );
+            try decoder.begin(blob);
+            present = .{ .blob = blob, .decoder = decoder };
+            offset += header.present_stripe.byte_len;
+        }
+        if (header.length_stripe.byte_len > 0) {
+            const blob = handle.blob.sliceFrom(offset);
+            var decoder = try stripe.Int.Decoder.init(
+                header.length_stripe.encoding,
+            );
+            try decoder.begin(blob);
+            length = .{ .blob = blob, .decoder = decoder };
+            offset += header.present_stripe.byte_len;
+        }
+        if (header.primary_stripe.byte_len > 0) {
+            const blob = handle.blob.sliceFrom(offset);
+            var decoder = try PrimaryDecoder.init(
+                data_type,
+                header.primary_stripe.encoding,
+            );
+            try decoder.begin(blob);
+            primary = .{ .blob = blob, .decoder = decoder };
+        }
+
+        return .{
+            .handle = handle,
+            .present = present,
+            .length = length,
+            .primary = primary,
+        };
+    }
+
+    /// The value will use the supplied buffer and allocator if necessary. The buffer
+    /// must be managed by the caller.
+    pub fn read(
+        self: *Self,
+        allocator: Allocator,
+        bytes_buf: *ArrayListUnmanaged(u8),
+    ) !Value {
+        var present = true;
+        if (self.present) |*pres_stripe| {
+            present = try pres_stripe.decoder.decode(pres_stripe.blob);
+        }
+
+        var primary: ?PrimaryValue = null;
+        if (present) {
+            const prim_stripe = &self.primary.?;
+            switch (prim_stripe.decoder) {
+                .Bool => |*d| primary = .{ .bool = try d.decode(prim_stripe.blob) },
+                .Int => |*d| primary = .{ .int = try d.decode(prim_stripe.blob) },
+                .Byte => {
+                    var len_stripe = self.length.?;
+                    const length = try len_stripe.decoder.decode(len_stripe.blob);
+                    try bytes_buf.resize(allocator, @intCast(length));
+                    try prim_stripe.decoder.Byte.decodeAll(
+                        prim_stripe.blob,
+                        bytes_buf.items,
+                    );
+                    primary = .{ .bytes = bytes_buf.items };
+                },
+            }
+        }
+
+        return .{ .primary = primary };
+    }
+
+    /// Panics if the value being read requires allocation
+    pub fn readNoAlloc(self: *Self) !Value {
+        var present = true;
+        if (self.present) |*pres_stripe| {
+            present = try pres_stripe.decoder.decode(pres_stripe.blob);
+        }
+
+        var primary: ?PrimaryValue = null;
+        if (present) {
+            const prim_stripe = &self.primary.?;
+            switch (prim_stripe.decoder) {
+                .Bool => |*d| primary = .{ .bool = try d.decode(prim_stripe.blob) },
+                .Int => |*d| primary = .{ .int = try d.decode(prim_stripe.blob) },
+                .Byte => @panic("allocation required while reading value"),
+            }
+        }
+
+        return .{ .primary = primary };
+    }
+
+    pub fn skip(self: *Self) !void {
+        var present = true;
+        if (self.present) |*pres_stripe| {
+            present = try pres_stripe.decoder.decode(pres_stripe.blob);
+        }
+
+        if (present) {
+            const prim_stripe = &self.primary.?;
+            switch (prim_stripe.decoder) {
+                .Byte => {
+                    const len_stripe = &self.length.?;
+                    const length = try len_stripe.decoder.decode(len_stripe.blob);
+                    prim_stripe.decoder.Byte.skip(length);
+                },
+                inline else => |*d| d.skip(),
+            }
+        }
+    }
+};
+
+const PrimaryDecoder = union(enum) {
+    const Self = @This();
+
+    Bool: stripe.Bool.Decoder,
+    Byte: stripe.Byte.Decoder,
+    Int: stripe.Int.Decoder,
+
+    fn init(data_type: ColumnType.DataType, encoding: stripe.Encoding) !Self {
+        return switch (data_type) {
+            .Boolean => .{ .Bool = try stripe.Bool.Decoder.init(encoding) },
+            .Integer => .{ .Int = try stripe.Int.Decoder.init(encoding) },
+            .Float => @panic("todo"),
+            .Text, .Blob => .{ .Byte = try stripe.Byte.Decoder.init(encoding) },
+        };
+    }
+
+    fn begin(self: *Self, blob: anytype) !void {
+        switch (self.*) {
+            inline else => |*d| try d.begin(blob),
+        }
+    }
+};
+
+test "segment reader" {
+    const OwnedValue = @import("value.zig").OwnedValue;
+
+    const conn = try @import("sqlite3/Conn.zig").openInMemory();
+    defer conn.close();
+    try @import("db.zig").Migrations.apply(conn);
+
+    const header = Header{
+        .present_stripe = .{
+            .byte_len = 0,
+            .encoding = undefined,
+        },
+        .length_stripe = .{
+            .byte_len = 0,
+            .encoding = undefined,
+        },
+        .primary_stripe = .{
+            .byte_len = 80,
+            .encoding = .Direct,
+        },
+    };
+    const direct = @import("stripe/encode/direct.zig");
+    const encoder = direct.Encoder(i64, stripe.Int.writeDirect).init();
+    const plan = Plan{
+        .header = header,
+        .present = null,
+        .length = null,
+        .primary = .{ .Int = .{ .direct = encoder } },
+    };
+
+    var db = Db.init(conn);
+    defer db.deinit();
+    var writer = try Writer.allocate(&db, plan);
+    defer db.free(writer.handle) catch {};
+
+    const cont = try writer.begin();
+    try std.testing.expect(cont);
+    for (0..10) |v| {
+        try writer.write(OwnedValue{
+            .Integer = @as(i64, @intCast(v)),
+        });
+    }
+    const handle = try writer.end();
+
+    var bytes_buf = ArrayListUnmanaged(u8){};
+    defer bytes_buf.deinit(std.testing.allocator);
+
+    var reader = try Reader.open(&db, .Integer, handle.id);
+    for (0..10) |idx| {
+        const value = try reader.read(std.testing.allocator, &bytes_buf);
+        try std.testing.expectEqual(idx, @intCast(value.asI64()));
+    }
+}
+
+const PrimaryValue = union {
+    bool: bool,
+    int: i64,
+    bytes: []const u8,
+};
+
+pub const Value = struct {
+    const Self = @This();
+
+    primary: ?PrimaryValue,
+
+    pub fn isNull(self: Self) bool {
+        return self.primary == null;
+    }
+
+    pub fn asBool(self: Self) bool {
+        return self.primary.?.bool;
+    }
+
+    pub fn asI32(self: Self) i32 {
+        return @intCast(self.primary.?.int);
+    }
+
+    pub fn asI64(self: Self) i64 {
+        return self.primary.?.int;
+    }
+
+    pub fn asF64(self: Self) f64 {
+        _ = self;
+        @panic("todo");
+    }
+
+    pub fn asBlob(self: Self) []const u8 {
+        return self.primary.?.bytes.items;
+    }
+
+    pub fn asText(self: Self) []const u8 {
+        return self.primary.?.bytes.items;
+    }
+};

@@ -104,6 +104,10 @@ pub fn next(self: Self) !bool {
     return true;
 }
 
+pub fn readSqliteValue(self: Self, index: usize) ?*c.sqlite3_value {
+    return c.sqlite3_column_value(self.stmt, @intCast(index));
+}
+
 pub fn read(
     self: Self,
     comptime read_type: SqliteType,

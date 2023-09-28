@@ -32,7 +32,7 @@ pub fn init() Self {
 
 pub fn read(blob: anytype) !Self {
     var buf: [encoded_len]u8 = undefined;
-    try blob.readAt(0, &buf);
+    try blob.readAt(&buf, 0);
     std.debug.assert(buf[0] == 1);
     return .{
         .present_stripe = readStripeMeta(buf[1..6]),
@@ -43,8 +43,8 @@ pub fn read(blob: anytype) !Self {
 
 fn readStripeMeta(buf: []const u8) StripeMeta {
     return .{
-        .byte_len = mem.readIntLittle(buf[0..4]),
-        .encoding = @enumFromInt(buf[5]),
+        .byte_len = mem.readIntLittle(u32, buf[0..4]),
+        .encoding = @enumFromInt(buf[4]),
     };
 }
 

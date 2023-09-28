@@ -173,7 +173,7 @@ pub fn update(
     change_set: ChangeSet,
 ) !void {
     if (change_set.changeType() == .Insert) {
-        self.primary_index.insert(change_set) catch |err| {
+        _ = self.primary_index.insert(change_set) catch |err| {
             cb_ctx.setErrorMessage("failed to log insert", .{});
             return err;
         };
