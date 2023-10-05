@@ -78,6 +78,11 @@ pub const DataType = enum {
     }
 };
 
+pub const Rowid: Self = .{
+    .data_type = .Integer,
+    .nullable = false,
+};
+
 pub fn format(
     self: Self,
     comptime _: []const u8,
@@ -87,6 +92,27 @@ pub fn format(
     const nullable = if (self.nullable) "NULL" else "NOT NULL";
     try writer.print("{s} {s}", .{ self.data_type, nullable });
 }
+
+pub fn sqliteFormatter(self: Self) SqliteFormatter {
+    return .{ .column_type = self };
+}
+
+pub const SqliteFormatter = struct {
+    column_type: Self,
+
+    pub fn format(
+        self: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        const nullable = if (self.column_type.nullable) "NULL" else "NOT NULL";
+        try writer.print("{s} {s}", .{
+            DataType.SqliteFormatter{ .data_type = self.column_type.data_type },
+            nullable,
+        });
+    }
+};
 
 pub fn read(canonical: []const u8) Self {
     var split = mem.indexOfScalar(u8, canonical, ' ').?;
