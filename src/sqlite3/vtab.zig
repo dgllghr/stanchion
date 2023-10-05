@@ -420,7 +420,11 @@ pub fn VirtualTable(comptime Table: type) type {
             const conn = Conn.init(db.?);
 
             const initTable = if (create) Table.create else Table.connect;
-            var table = initTable(allocator, conn, &cb_ctx, args) catch {
+            var table = allocator.create(Table) catch {
+                err_str.* = dupeToSQLiteString("out of memory");
+                return c.SQLITE_ERROR;
+            };
+            table.* = initTable(allocator, conn, &cb_ctx, args) catch {
                 err_str.* = dupeToSQLiteString(cb_ctx.error_message);
                 return c.SQLITE_ERROR;
             };
@@ -429,7 +433,7 @@ pub fn VirtualTable(comptime Table: type) type {
             // TODO table.destroy and table.disconnect might need to return errors
             errdefer if (create) table.destroy() else table.disconnect();
 
-            const state = State.init(allocator, &table) catch {
+            const state = State.init(allocator, table) catch {
                 err_str.* = dupeToSQLiteString(cb_ctx.error_message);
                 return c.SQLITE_ERROR;
             };
@@ -500,7 +504,8 @@ pub fn VirtualTable(comptime Table: type) type {
             var values = ChangeSet.init(
                 @as([*c]?*c.sqlite3_value, @ptrCast(argv))[0..@intCast(argc)],
             );
-            state.table.update(&cb_ctx, @ptrCast(row_id_ptr), values) catch {
+            state.table.update(&cb_ctx, @ptrCast(row_id_ptr), values) catch |e| {
+                std.log.err("error calling update on table: {any}", .{e});
                 // TODO how to set the error message?
                 //err_str.* = dupeToSQLiteString(cb_ctx.error_message);
                 return c.SQLITE_ERROR;
