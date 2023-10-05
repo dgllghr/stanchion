@@ -23,7 +23,7 @@ USING stanchion (
 
 INSERT INTO dnd_monsters (id, name, type, size, challenge_rating)
 VALUES
-    (1, 'Beholder', 'ABERRATION' 4, 13),
+    (1, 'Beholder', 'ABERRATION', 4, 13),
     (2, 'Gelatinous Cube', 'OOZE', 4, 2),
     (3, 'Mimic', 'MONSTROSITY', 3, 2),
     (4, 'Lich', 'UNDEAD' 3, 21);
