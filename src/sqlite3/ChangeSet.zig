@@ -5,6 +5,8 @@ const Self = @This();
 
 values: []?*c.sqlite3_value,
 
+pub const Value = ?*c.sqlite3_value;
+
 pub const ChangeType = enum {
     Insert,
     Update,
@@ -25,11 +27,10 @@ pub fn changeType(self: Self) ChangeType {
     return .Update;
 }
 
-pub fn readRowid(self: Self) i64 {
-    const ref = ValueRef{
-        .value = self.values[0],
+pub fn readRowid(self: Self) ValueRef {
+    return .{
+        .value = self.values[1],
     };
-    return ref.asI64();
 }
 
 /// Number of values in this change set (not including rowid). Should not be called when
@@ -40,6 +41,6 @@ pub fn valuesLen(self: Self) usize {
 
 pub fn readValue(self: Self, index: usize) ValueRef {
     return .{
-        .value = self.values[index + 1],
+        .value = self.values[index + 2],
     };
 }

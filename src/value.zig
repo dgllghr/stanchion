@@ -17,6 +17,16 @@ pub const OwnedValue = union(enum) {
     Text: []const u8,
     Blob: []const u8,
 
+    pub fn fromRef(allocator: Allocator, value: ValueRef) !Self {
+        return switch (value.valueType()) {
+            .Null => .Null,
+            .Integer => .{ .Integer = value.asI64() },
+            .Float => .{ .Float = value.asF64() },
+            .Text => .{ .Text = try allocator.dupe(u8, value.asText()) },
+            .Blob => .{ .Blob = try allocator.dupe(u8, value.asBlob()) },
+        };
+    }
+
     pub fn deinit(self: *Self, allocator: Allocator) void {
         switch (self) {
             .Null, .Boolean, .Integer, .Float => {},
@@ -97,8 +107,8 @@ pub const OwnedRow = struct {
         allocator.free(self.values);
     }
 
-    pub fn readRowid(self: Self) i64 {
-        return self.rowid.?;
+    pub fn readRowid(self: Self) OwnedValue {
+        return .{ .Integer = self.rowid.? };
     }
 
     /// Number of values in this change set (not including rowid). Should not be called
