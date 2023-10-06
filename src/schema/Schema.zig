@@ -16,7 +16,12 @@ sort_key: ArrayListUnmanaged(usize),
 
 pub const Error = error{ SortKeyColumnNotFound, ExecReturnedData };
 
-pub fn create(allocator: Allocator, db: *Db, table_id: i64, def: SchemaDef) !Self {
+pub fn create(
+    allocator: Allocator,
+    db: *Db,
+    table_id: i64,
+    def: SchemaDef,
+) !Self {
     // Find and validate sort keys
     var sort_key = try ArrayListUnmanaged(usize)
         .initCapacity(allocator, def.sort_key.items.len);

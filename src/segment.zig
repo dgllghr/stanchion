@@ -241,6 +241,7 @@ pub const Writer = struct {
 
     /// If an error is returned, the Writer can no longer be used and the blob must be
     /// freed using the `handle`.
+    /// TODO allow writing primitive types directly without being wrapped in an interface
     pub fn write(self: *Self, value: anytype) !void {
         const value_type = value.valueType();
 

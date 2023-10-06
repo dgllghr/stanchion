@@ -28,7 +28,11 @@ pub const CallbackContext = struct {
         comptime format_string: []const u8,
         values: anytype,
     ) void {
-        self.error_message = fmt.allocPrint(self.arena.allocator(), format_string, values) catch |err| switch (err) {
+        self.error_message = fmt.allocPrint(
+            self.arena.allocator(),
+            format_string,
+            values,
+        ) catch |err| switch (err) {
             error.OutOfMemory => "can't set diagnostic message, out of memory",
         };
     }

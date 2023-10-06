@@ -1,0 +1,520 @@
+const std = @import("std");
+const fmt = std.fmt;
+const mem = std.mem;
+const Allocator = std.mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
+
+const Conn = @import("sqlite3/Conn.zig");
+const Stmt = @import("sqlite3/Stmt.zig");
+const ValueRef = @import("sqlite3/value.zig").Ref;
+const sqlite_c = @import("sqlite3/c.zig").c;
+
+const StmtCell = @import("StmtCell.zig");
+
+const s = @import("schema.zig");
+const DataType = s.ColumnType.DataType;
+const Schema = s.Schema;
+
+const segment = @import("segment.zig");
+const SegmentDb = segment.Db;
+
+const Self = @This();
+
+conn: Conn,
+
+table_name: []const u8,
+columns_len: usize,
+sort_key: []const usize,
+
+next_rowid: i64,
+
+insert_entry: StmtCell,
+find_row_group: StmtCell,
+inserts_iterator: StmtCell,
+inserts_iterator_from_start: StmtCell,
+
+sort_key_buf: []?*sqlite_c.sqlite3_value,
+
+/// The primary index holds two types of entries. This is the enum that differentiates
+/// the entries.
+const EntryType = enum(u8) {
+    RowGroup = 1,
+    Insert = 2,
+
+    fn bind(self: EntryType, stmt: Stmt, index: usize) !void {
+        try stmt.bind(.Int32, index, @intCast(@intFromEnum(self)));
+    }
+};
+
+//
+// Create
+//
+
+/// The `static_arena` is used to allocate any memory that lives for the lifetime of the
+/// primary index. The `tmp_arena` is used to allocate memory that can be freed any time
+/// after the function returns.
+pub fn create(
+    static_arena: *ArenaAllocator,
+    tmp_arena: *ArenaAllocator,
+    conn: Conn,
+    table_name: []const u8,
+    schema: *const Schema,
+) !Self {
+    const ddl_formatter = CreateTableDdlFormatter{
+        .table_name = table_name,
+        .schema = schema,
+    };
+    const ddl = try fmt.allocPrintZ(tmp_arena.allocator(), "{s}", .{ddl_formatter});
+    try conn.exec(ddl);
+    return open(static_arena, conn, table_name, schema, 1);
+}
+
+const CreateTableDdlFormatter = struct {
+    table_name: []const u8,
+    schema: *const Schema,
+
+    pub fn format(
+        self: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        try writer.print(
+            \\CREATE TABLE "_stanchion_{s}_primary_index" (
+        ,
+            .{self.table_name},
+        );
+        for (self.schema.sort_key.items, 0..) |sk_index, sk_rank| {
+            const col = &self.schema.columns.items[sk_index];
+            const data_type = DataType.SqliteFormatter{
+                .data_type = col.column_type.data_type,
+            };
+            try writer.print("sk_value_{d} {s} NOT NULL,", .{ sk_rank, data_type });
+        }
+        // The `col_N` columns are uesd for storing values for insert entries and
+        // segment IDs for row group entries
+        for (0..self.schema.columns.items.len) |rank| {
+            try writer.print("col_{d} ANY NULL,", .{rank});
+        }
+        try writer.print(
+        // Only used by the row group entry type
+            \\rowid_segment_id INTEGER NULL,
+            // Used by all entry types
+            \\rowid INTEGER NOT NULL,
+            // Only used by the row group entry type to count the number of records
+            // in the row group
+            \\record_count INTEGER NULL,
+            // Code that specifies the type of the entry
+            \\entry_type INTEGER NOT NULL,
+            \\PRIMARY KEY (
+        , .{});
+        for (0..self.schema.sort_key.items.len) |sk_rank| {
+            try writer.print("sk_value_{d},", .{sk_rank});
+        }
+        try writer.print("rowid)", .{});
+        // TODO in tests it would be nice to add some check constraints to ensure
+        //      data is populated correctly based on the entry_type
+        try writer.print(") STRICT, WITHOUT ROWID", .{});
+    }
+};
+
+//
+// Open
+//
+
+pub fn open(
+    static_arena: *ArenaAllocator,
+    conn: Conn,
+    table_name: []const u8,
+    schema: *const Schema,
+    next_rowid: i64,
+) !Self {
+    const sort_key = schema.sort_key.items;
+    const sort_key_buf = try static_arena.allocator()
+        .alloc(?*sqlite_c.sqlite3_value, sort_key.len);
+
+    var self = Self{
+        .conn = conn,
+        .table_name = table_name,
+        .columns_len = schema.columns.items.len,
+        .sort_key = sort_key,
+        .next_rowid = next_rowid,
+        .insert_entry = undefined,
+        .find_row_group = undefined,
+        .inserts_iterator = undefined,
+        .inserts_iterator_from_start = undefined,
+        .sort_key_buf = sort_key_buf,
+    };
+    try self.initStatements(static_arena);
+
+    return self;
+}
+
+//
+// Deinit
+//
+
+/// Must be called before memory is freed by the `static_arena` provided to `create` or
+/// `open`
+pub fn deinit(self: *Self) void {
+    self.insert_entry.deinit();
+    self.find_row_group.deinit();
+    self.inserts_iterator.deinit();
+    self.inserts_iterator_from_start.deinit();
+}
+
+//
+// Row Group
+//
+
+pub const RowGroupEntry = struct {
+    rowid_segment_id: i64,
+    column_segment_ids: []i64,
+    record_count: u32,
+
+    pub fn deinit(self: *@This(), allocator: Allocator) void {
+        allocator.free(self.column_segment_ids);
+    }
+};
+
+pub fn insertRowGroupEntry(
+    self: *Self,
+    sort_key: anytype,
+    rowid: i64,
+    entry: *const RowGroupEntry,
+) !void {
+    const stmt = try self.insert_entry.getStmt(self.conn);
+    defer self.insert_entry.reset();
+
+    try EntryType.RowGroup.bind(stmt, 1);
+    try stmt.bind(.Int64, 2, @intCast(entry.record_count));
+    try stmt.bind(.Int64, 3, rowid);
+    try stmt.bind(.Int64, 4, entry.rowid_segment_id);
+    for (self.sort_key, 5..) |rank, idx| {
+        try sort_key[rank].bind(stmt, idx);
+    }
+    const col_idx_start = self.sort_key.len + 5;
+    for (0..self.columns_len, col_idx_start..) |rank, idx| {
+        try stmt.bind(.Int64, rank, entry.column_segment_ids[idx]);
+    }
+
+    try stmt.exec();
+}
+
+/// Handle to a row group entry in the primary index. This handle holds an open statement
+/// in sqlite and must be released with `deinit` after use. Only one of these handles can
+/// be open in the primary index at a time.
+pub const RowGroupEntryHandle = union(enum) {
+    start,
+    row_group: struct {
+        /// Owned by the PrimaryIndex
+        cell: *StmtCell,
+        /// Owned by the PrimaryIndex
+        sort_key: []?*sqlite_c.sqlite3_value,
+        rowid: i64,
+    },
+
+    pub fn deinit(self: *@This()) void {
+        switch (self.*) {
+            .row_group => |*rg| rg.cell.reset(),
+            else => {},
+        }
+    }
+};
+
+/// Finds the row group that precedes the provided row based on the sort key and rowid.
+/// The returned handle  can be used to iterate the insert entries following the row
+/// group and must be deinitialized by the caller after use.
+pub fn precedingRowGroup(
+    self: *Self,
+    rowid: i64,
+    row: anytype,
+) !RowGroupEntryHandle {
+    const stmt = try self.find_row_group.getStmt(self.conn);
+    errdefer self.find_row_group.reset();
+
+    for (self.sort_key, 1..) |col_idx, idx| {
+        try row.readValue(col_idx).bind(stmt, idx);
+    }
+    try stmt.bind(.Int64, self.sort_key.len + 1, rowid);
+
+    const has_row_group = try stmt.next();
+    if (!has_row_group) {
+        self.find_row_group.reset();
+        return .start;
+    }
+
+    for (0..self.sort_key.len) |idx| {
+        self.sort_key_buf[idx] = stmt.readSqliteValue(idx);
+    }
+    const rg_rowid = stmt.read(.Int64, false, self.sort_key.len);
+
+    return .{ .row_group = .{
+        .cell = &self.find_row_group,
+        .sort_key = self.sort_key_buf,
+        .rowid = rg_rowid,
+    } };
+}
+
+//
+// Staged inserts
+//
+
+pub fn insertInsertEntry(self: *Self, values: anytype) !i64 {
+    const rowid = self.next_rowid;
+    self.next_rowid += 1;
+    const stmt = try self.insert_entry.getStmt(self.conn);
+    defer self.insert_entry.reset();
+
+    try EntryType.Insert.bind(stmt, 1);
+    try stmt.bindNull(2);
+    try stmt.bind(.Int64, 3, rowid);
+    try stmt.bindNull(4);
+    for (self.sort_key, 5..) |rank, idx| {
+        try values.readValue(rank).bind(stmt, idx);
+    }
+    const col_idx_start = self.sort_key.len + 5;
+    // Sort key values are duplicated into both the sort key columns and the column value
+    // columns
+    for (0..self.columns_len, col_idx_start..) |rank, idx| {
+        try values.readValue(rank).bind(stmt, idx);
+    }
+
+    stmt.exec() catch |e| {
+        const err_msg = sqlite_c.sqlite3_errmsg(self.conn.conn);
+        std.log.err("error executing insert: {any} {s}", .{ e, err_msg });
+        return e;
+    };
+
+    return rowid;
+}
+
+test "primary index: insert" {
+    const OwnedRow = @import("value.zig").OwnedRow;
+    const OwnedValue = @import("value.zig").OwnedValue;
+
+    const conn = try @import("sqlite3/Conn.zig").openInMemory();
+    defer conn.close();
+
+    const ArrayListUnmanaged = std.ArrayListUnmanaged;
+    const Column = @import("schema/Column.zig");
+    var columns = ArrayListUnmanaged(Column){};
+    defer columns.deinit(std.testing.allocator);
+    try columns.appendSlice(std.testing.allocator, &[_]Column{
+        .{
+            .rank = 0,
+            .name = "foo",
+            .column_type = .{ .data_type = .Blob, .nullable = false },
+            .sk_rank = 0,
+        },
+        .{
+            .rank = 1,
+            .name = "bar",
+            .column_type = .{ .data_type = .Integer, .nullable = true },
+            .sk_rank = null,
+        },
+    });
+    var sort_key = ArrayListUnmanaged(usize){};
+    defer sort_key.deinit(std.testing.allocator);
+    try sort_key.append(std.testing.allocator, 0);
+    const schema = Schema{
+        .columns = columns,
+        .sort_key = sort_key,
+    };
+
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var primary_index = try create(&arena, &arena, conn, "test", &schema);
+    defer primary_index.deinit();
+
+    var row = [_]OwnedValue{
+        .{ .Blob = "magnitude" },
+        .{ .Integer = 100 },
+    };
+    _ = try primary_index.insertInsertEntry(OwnedRow{
+        .rowid = null,
+        .values = &row,
+    });
+
+    row = [_]OwnedValue{
+        .{ .Blob = "amplitude" },
+        .{ .Integer = 7 },
+    };
+    _ = try primary_index.insertInsertEntry(OwnedRow{
+        .rowid = null,
+        .values = &row,
+    });
+}
+
+/// Iterates until a row group entry is found or the end of the table is reached
+pub const StagedInsertsIterator = struct {
+    stmt: Stmt,
+    cell: *StmtCell,
+    starts_at_row_group: bool,
+
+    pub fn deinit(self: *@This()) void {
+        self.cell.reset();
+    }
+
+    pub fn restart(self: *@This()) !void {
+        try self.stmt.restart();
+
+        if (self.starts_at_row_group) {
+            _ = try self.stmt.next();
+        }
+    }
+
+    pub fn next(self: *@This()) !bool {
+        const has_next = try self.stmt.next();
+        if (!has_next) {
+            return false;
+        }
+        const entry_type: EntryType = @enumFromInt(self.stmt.read(.Int32, false, 0));
+        return entry_type != .RowGroup;
+    }
+
+    pub fn readRowId(self: *@This()) ValueRef {
+        return ValueRef{ .value = self.stmt.readSqliteValue(0) };
+    }
+
+    pub fn readValue(self: *@This(), idx: usize) ValueRef {
+        return ValueRef{ .value = self.stmt.readSqliteValue(idx + 2) };
+    }
+};
+
+/// Create an iterator that iterates over all pending inserts after the provided row
+/// group and before the subsequent row group.
+pub fn stagedInserts(
+    self: *Self,
+    preceding_row_group_handle: *const RowGroupEntryHandle,
+) !StagedInsertsIterator {
+    var iter = StagedInsertsIterator{
+        .stmt = undefined,
+        .cell = undefined,
+        .starts_at_row_group = undefined,
+    };
+    switch (preceding_row_group_handle.*) {
+        .row_group => |*handle| {
+            iter.stmt = try self.inserts_iterator.getStmt(self.conn);
+            errdefer self.inserts_iterator.reset();
+
+            for (0..self.sort_key.len) |idx| {
+                try iter.stmt.bindSqliteValue(idx, handle.sort_key[idx]);
+            }
+            try iter.stmt.bind(.Int64, self.sort_key.len, handle.rowid);
+
+            const row_group_exists = try iter.stmt.next();
+            std.debug.assert(row_group_exists);
+
+            iter.cell = &self.inserts_iterator;
+            iter.starts_at_row_group = true;
+        },
+        .start => {
+            iter.stmt = try self.inserts_iterator_from_start.getStmt(self.conn);
+            iter.cell = &self.inserts_iterator_from_start;
+            iter.starts_at_row_group = false;
+        },
+    }
+
+    return iter;
+}
+
+//
+// Statements
+//
+
+fn initStatements(self: *Self, static_arena: *ArenaAllocator) !void {
+    const allocator = static_arena.allocator();
+
+    const insert_entry_query = try fmt.allocPrintZ(allocator,
+        \\INSERT INTO "_stanchion_{s}_primary_index" (
+        \\  entry_type, record_count, rowid, rowid_segment_id, {s}, {s}
+        \\) VALUES (?, ?, ?, ?, {s})
+    , .{
+        self.table_name,
+        ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
+        ColumnListFormatter("col_{d}"){ .len = self.columns_len },
+        ParameterListFormatter{ .len = self.columns_len + self.sort_key.len },
+    });
+    self.insert_entry = StmtCell.init(insert_entry_query);
+
+    const find_row_group_query = try fmt.allocPrintZ(allocator,
+        \\  SELECT {s}, rowid
+        \\  FROM "_stanchion_{s}_primary_index"
+        \\  WHERE ({s}, rowid) <= ({s}, ?) AND entry_type = {d}
+        \\  ORDER BY {s}, rowid DESC
+        \\  LIMIT 1
+    , .{
+        ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
+        self.table_name,
+        ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
+        ParameterListFormatter{ .len = self.sort_key.len },
+        @intFromEnum(EntryType.RowGroup),
+        ColumnListFormatter("sk_value_{d} DESC"){ .len = self.sort_key.len },
+    });
+    self.find_row_group = StmtCell.init(find_row_group_query);
+
+    const inserts_iterator_query = try fmt.allocPrintZ(allocator,
+        \\SELECT entry_type, rowid, {s}
+        \\FROM "_stanchion_{s}_primary_index"
+        \\WHERE ({s}, rowid) >= ({s}, ?)
+        \\ORDER BY {s}, rowid DESC
+    , .{
+        ColumnListFormatter("col_{d}"){ .len = self.columns_len },
+        self.table_name,
+        ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
+        ParameterListFormatter{ .len = self.sort_key.len },
+        ColumnListFormatter("sk_value_{d} DESC"){ .len = self.sort_key.len },
+    });
+    self.inserts_iterator = StmtCell.init(inserts_iterator_query);
+
+    const inserts_iterator_from_start_query = try fmt.allocPrintZ(allocator,
+        \\SELECT entry_type, rowid, {s}
+        \\FROM "_stanchion_{s}_primary_index"
+        \\ORDER BY {s}, rowid DESC
+    , .{
+        ColumnListFormatter("col_{d}"){ .len = self.columns_len },
+        self.table_name,
+        ColumnListFormatter("sk_value_{d} DESC"){ .len = self.sort_key.len },
+    });
+    self.inserts_iterator_from_start = StmtCell.init(inserts_iterator_from_start_query);
+}
+
+fn ColumnListFormatter(comptime column_name_template: []const u8) type {
+    return struct {
+        len: usize,
+
+        pub fn format(
+            self: @This(),
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            for (0..self.len) |idx| {
+                if (idx > 0) {
+                    try writer.print(",", .{});
+                }
+                try writer.print(column_name_template, .{idx});
+            }
+        }
+    };
+}
+
+const ParameterListFormatter = struct {
+    len: usize,
+
+    pub fn format(
+        self: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        for (0..self.len) |idx| {
+            if (idx > 0) {
+                try writer.print(",", .{});
+            }
+            try writer.print("?", .{});
+        }
+    }
+};

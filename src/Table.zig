@@ -2,6 +2,7 @@ const std = @import("std");
 const fmt = std.fmt;
 const mem = std.mem;
 const Allocator = std.mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
 const Type = std.builtin.Type;
 
 const ChangeSet = @import("sqlite3/ChangeSet.zig");
@@ -17,15 +18,20 @@ const schema = @import("schema.zig");
 const SchemaDef = schema.SchemaDef;
 const Schema = schema.Schema;
 
-const PrimaryIndex = @import("primary_index.zig").PrimaryIndex;
+const segment = @import("segment.zig");
+
+const PrimaryIndex = @import("PrimaryIndex.zig");
+//const row_group = @import("row_group.zig");
 
 const Self = @This();
 
+allocator: Allocator,
+table_static_arena: ArenaAllocator,
 db: struct {
     schema: schema.Db,
     table: Db,
+    segment: segment.Db,
 },
-allocator: Allocator,
 id: i64,
 name: []const u8,
 schema: Schema,
@@ -49,15 +55,20 @@ pub fn create(
 
     const db_name = args[1];
     if (!mem.eql(u8, "main", db_name)) {
-        cb_ctx.setErrorMessage("only 'main' db currently supported, got {s}", .{db_name});
+        cb_ctx.setErrorMessage(
+            "only 'main' db currently supported, got {s}",
+            .{db_name},
+        );
         return InitError.UnsupportedDb;
     }
 
-    const name = try allocator.dupe(u8, args[2]);
-    errdefer allocator.free(name);
+    var table_static_arena = ArenaAllocator.init(allocator);
+    errdefer table_static_arena.deinit();
 
-    // Use the arena allocator because the schema def is not stored. The data is
-    // converted into a Schema when the schema is created.
+    const name = try table_static_arena.allocator().dupe(u8, args[2]);
+
+    // Use the arena allocator because the schema def is not stored with the table. The
+    // data is converted into a Schema and the Schema is stored.
     const def = SchemaDef.parse(cb_ctx.arena, args[3..]) catch |e| {
         cb_ctx.setErrorMessage("error parsing schema definition: {any}", .{e});
         return e;
@@ -66,15 +77,38 @@ pub fn create(
     var db = .{
         .table = Db.init(conn),
         .schema = schema.Db.init(conn),
+        .segment = segment.Db.init(conn),
     };
 
-    const table_id = try db.table.createTable(name);
-    var s = try Schema.create(allocator, &db.schema, table_id, def);
+    const table_id = db.table.insertTable(name) catch |e| {
+        cb_ctx.setErrorMessage("error inserting table: {any}", .{e});
+        return e;
+    };
 
-    const primary_index = try PrimaryIndex.create(allocator, conn, name, &s);
+    var s = Schema.create(
+        allocator,
+        &db.schema,
+        table_id,
+        def,
+    ) catch |e| {
+        cb_ctx.setErrorMessage("error creating schema: {any}", .{e});
+        return e;
+    };
+
+    const primary_index = PrimaryIndex.create(
+        &table_static_arena,
+        cb_ctx.arena,
+        conn,
+        name,
+        &s,
+    ) catch |e| {
+        cb_ctx.setErrorMessage("error creating primary index: {any}", .{e});
+        return e;
+    };
 
     return .{
         .allocator = allocator,
+        .table_static_arena = table_static_arena,
         .db = db,
         .id = table_id,
         .name = name,
@@ -124,23 +158,45 @@ pub fn connect(
         return InitError.UnsupportedDb;
     }
 
-    // TODO set error message for all try below
+    var table_static_arena = ArenaAllocator.init(allocator);
+    errdefer table_static_arena.deinit();
 
-    const name = try allocator.dupe(u8, args[2]);
-    errdefer allocator.free(name);
+    const name = try table_static_arena.allocator().dupe(u8, args[2]);
 
     var db = .{
         .table = Db.init(conn),
         .schema = schema.Db.init(conn),
+        .segment = segment.Db.init(conn),
     };
 
-    const table_id = try db.table.loadTable(name);
-    const s = try Schema.load(allocator, &db.schema, table_id);
+    const table_id = db.table.loadTable(name) catch |e| {
+        cb_ctx.setErrorMessage("error loading table: {any}", .{e});
+        return e;
+    };
 
-    const primary_index = try PrimaryIndex.open(allocator, conn, name, &s, 1);
+    const s = Schema.load(
+        allocator,
+        &db.schema,
+        table_id,
+    ) catch |e| {
+        cb_ctx.setErrorMessage("error loading schema: {any}", .{e});
+        return e;
+    };
+
+    const primary_index = PrimaryIndex.open(
+        &table_static_arena,
+        conn,
+        name,
+        &s,
+        1,
+    ) catch |e| {
+        cb_ctx.setErrorMessage("error opening primary index: {any}", .{e});
+        return e;
+    };
 
     return .{
         .allocator = allocator,
+        .table_static_arena = table_static_arena,
         .db = db,
         .id = table_id,
         .name = name,
@@ -151,10 +207,12 @@ pub fn connect(
 
 pub fn disconnect(self: *Self) void {
     self.primary_index.deinit();
-    self.db.table.deinit();
+    self.db.segment.deinit();
     self.db.schema.deinit();
+    self.db.table.deinit();
+
     self.schema.deinit(self.allocator);
-    self.allocator.free(self.name);
+    self.table_static_arena.deinit();
 }
 
 pub fn destroy(self: *Self) void {
@@ -162,23 +220,55 @@ pub fn destroy(self: *Self) void {
     self.disconnect();
 }
 
-pub fn ddl(_: *Self, allocator: Allocator) ![:0]const u8 {
-    return fmt.allocPrintZ(allocator, "CREATE TABLE x (foo INTEGER)", .{});
+pub fn ddl(self: *Self, allocator: Allocator) ![:0]const u8 {
+    return fmt.allocPrintZ(
+        allocator,
+        "{}",
+        .{self.schema.sqliteDdlFormatter(self.name)},
+    );
 }
 
 pub fn update(
     self: *Self,
     cb_ctx: *vtab.CallbackContext,
-    _: ?*i64,
+    rowid: *i64,
     change_set: ChangeSet,
 ) !void {
     if (change_set.changeType() == .Insert) {
-        _ = self.primary_index.insert(change_set) catch |err| {
+        rowid.* = self.primary_index.insertInsertEntry(change_set) catch |err| {
             cb_ctx.setErrorMessage("failed to log insert", .{});
             return err;
         };
+
+        // Count the number of pending inserts for a row group and merge them if the
+        // count is above a threshold
+        // TODO do this at end of transaction (requires tracking which row groups got
+        //      inserts)
+
+        var handle = try self.primary_index.precedingRowGroup(rowid.*, change_set);
+        defer handle.deinit();
+
+        var iter = try self.primary_index.stagedInserts(&handle);
+        var count: u32 = 0;
+        while (try iter.next()) {
+            count += 1;
+        }
+
+        if (count > 10_000) {
+            // TODO create a new row group for the staged inserts
+            // try iter.restart();
+            // try row_group.create(
+            //     self.allocator,
+            //     &self.schema,
+            //     &self.db.segment,
+            //     &self.primary_index,
+            //     &iter,
+            // );
+        }
+
         return;
     }
+
     @panic("todo");
 }
 
@@ -210,7 +300,7 @@ const Db = struct {
         }
     }
 
-    pub fn createTable(self: *Db, name: []const u8) !i64 {
+    pub fn insertTable(self: *Db, name: []const u8) !i64 {
         if (self.create_table == null) {
             self.create_table = try self.conn.prepare(
                 \\INSERT INTO _stanchion_tables (name)
