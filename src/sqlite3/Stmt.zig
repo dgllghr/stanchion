@@ -35,6 +35,14 @@ pub fn deinit(self: Self) void {
     _ = c.sqlite3_finalize(self.stmt);
 }
 
+/// Restarts the executation of the statement with the same parameters
+pub fn restart(self: Self) !void {
+    var res = c.sqlite3_reset(self.stmt);
+    if (res != c.SQLITE_OK) {
+        return errors.errorFromResultCode(res);
+    }
+}
+
 /// Resets both bound parameters and the execution state. This is unlike the sqlite
 /// API where bound parameters and execution state are reset separately.
 pub fn reset(self: Self) !void {
@@ -42,10 +50,7 @@ pub fn reset(self: Self) !void {
     if (res != c.SQLITE_OK) {
         return errors.errorFromResultCode(res);
     }
-    res = c.sqlite3_reset(self.stmt);
-    if (res != c.SQLITE_OK) {
-        return errors.errorFromResultCode(res);
-    }
+    try self.restart();
 }
 
 pub fn bindNull(self: Self, index: usize) !void {
@@ -56,18 +61,33 @@ pub fn bindNull(self: Self, index: usize) !void {
 }
 
 pub fn bind(self: Self, comptime t: SqliteType, index: usize, value: ?t.Type()) !void {
-    var res: c_int = 0;
+    var res: c_int = undefined;
     if (value == null) {
         res = c.sqlite3_bind_null(self.stmt, @intCast(index));
     } else {
         res = switch (t) {
-            .Bool => c.sqlite3_bind_int(self.stmt, @intCast(index), if (value.?) 1 else 0),
+            .Bool => c.sqlite3_bind_int(
+                self.stmt,
+                @intCast(index),
+                if (value.?) 1 else 0,
+            ),
             .Int32 => c.sqlite3_bind_int(self.stmt, @intCast(index), value.?),
             .Int64 => c.sqlite3_bind_int64(self.stmt, @intCast(index), value.?),
             .Float => c.sqlite3_bind_double(self.stmt, @intCast(index), value.?),
-            // TODO is SQLITE_STATIC right?
-            .Text => c.sqlite3_bind_text(self.stmt, @intCast(index), @ptrCast(value.?), @intCast(value.?.len), c.SQLITE_STATIC),
-            .Blob => c.sqlite3_bind_blob(self.stmt, @intCast(index), @ptrCast(value.?), @intCast(value.?.len), c.SQLITE_STATIC),
+            .Text => c.sqlite3_bind_text(
+                self.stmt,
+                @intCast(index),
+                @ptrCast(value.?),
+                @intCast(value.?.len),
+                c.SQLITE_STATIC,
+            ),
+            .Blob => c.sqlite3_bind_blob(
+                self.stmt,
+                @intCast(index),
+                @ptrCast(value.?),
+                @intCast(value.?.len),
+                c.SQLITE_STATIC,
+            ),
         };
     }
     if (res != c.SQLITE_OK) {
