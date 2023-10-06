@@ -7,6 +7,8 @@ const Stmt = @import("sqlite3/Stmt.zig");
 const Self = @This();
 
 stmt: ?Stmt,
+/// Not owned and therefore not deallocated by the `StmtCell`. Must be de-allocated by
+/// the caller.
 sql: [:0]const u8,
 
 pub fn init(sql: [:0]const u8) Self {
@@ -16,9 +18,7 @@ pub fn init(sql: [:0]const u8) Self {
     };
 }
 
-/// `allocator` must be same as one used to allocate `sql`
-pub fn deinit(self: *Self, allocator: Allocator) void {
-    allocator.free(self.sql);
+pub fn deinit(self: *Self) void {
     if (self.stmt) |s| {
         s.deinit();
     }
@@ -28,7 +28,8 @@ pub fn reset(self: *Self) void {
     if (self.stmt) |s| {
         // TODO a failed reset can invalidate a transaction. How can this error be
         //      propagated?
-        s.reset() catch {
+        s.reset() catch |e| {
+            std.log.err("failed to reset statement: {any}", .{e});
             s.deinit();
             self.stmt = null;
         };
