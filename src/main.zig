@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator;
 
 const c = @import("./sqlite3/c.zig").c;
 const sqlite_errors = @import("./sqlite3/errors.zig");
@@ -11,6 +12,8 @@ const Migrations = @import("./db.zig").Migrations;
 const Table = @import("./Table.zig");
 const StanchionVTab = vtab.VirtualTable(Table);
 
+var allocator: GeneralPurposeAllocator(.{}) = undefined;
+
 pub export fn sqlite3_stanchion_init(
     db: *c.sqlite3,
     err_msg: [*c][*c]u8,
@@ -21,15 +24,21 @@ pub export fn sqlite3_stanchion_init(
     // To store data common to all table instances (global to the module), replace this
     // allocator with a struct containing the common data (see `ModuleContext` in
     // `zig-sqlite`)
-    var allocator = std.heap.GeneralPurposeAllocator(.{}){};
+    allocator = GeneralPurposeAllocator(.{}){};
 
     const conn = Conn.init(db);
     Migrations.apply(conn) catch {
-        err_msg.* = @constCast(@ptrCast("error apply migrations"));
+        err_msg.* = @constCast(@ptrCast("error applying migrations"));
         return c.SQLITE_ERROR;
     };
 
-    const res = c.sqlite3_create_module_v2(db, "stanchion", &StanchionVTab.module, &allocator, null);
+    const res = c.sqlite3_create_module_v2(
+        db,
+        "stanchion",
+        &StanchionVTab.module,
+        &allocator,
+        null,
+    );
     if (res != c.SQLITE_OK) {
         err_msg.* = @constCast(@ptrCast("error creating module"));
         return res;
