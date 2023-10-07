@@ -26,7 +26,7 @@ VALUES
     (1, 'Beholder', 'ABERRATION', 4, 13),
     (2, 'Gelatinous Cube', 'OOZE', 4, 2),
     (3, 'Mimic', 'MONSTROSITY', 3, 2),
-    (4, 'Lich', 'UNDEAD' 3, 21);
+    (4, 'Lich', 'UNDEAD', 3, 21);
 
 -- Because the `dnd_monsters` table is column-oriented, the following query
 -- only reads data from the `name`, `type`, and `challenge_rating` columns.
