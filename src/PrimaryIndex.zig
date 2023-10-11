@@ -407,9 +407,9 @@ pub fn stagedInserts(
             errdefer self.inserts_iterator.reset();
 
             for (0..self.sort_key.len) |idx| {
-                try iter.stmt.bindSqliteValue(idx, handle.sort_key[idx]);
+                try iter.stmt.bindSqliteValue(idx + 1, handle.sort_key[idx]);
             }
-            try iter.stmt.bind(.Int64, self.sort_key.len, handle.rowid);
+            try iter.stmt.bind(.Int64, self.sort_key.len + 1, handle.rowid);
 
             const row_group_exists = try iter.stmt.next();
             std.debug.assert(row_group_exists);
