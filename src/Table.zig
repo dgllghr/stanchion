@@ -21,7 +21,7 @@ const Schema = schema.Schema;
 const segment = @import("segment.zig");
 
 const PrimaryIndex = @import("PrimaryIndex.zig");
-//const row_group = @import("row_group.zig");
+const row_group = @import("row_group.zig");
 
 const Self = @This();
 
@@ -249,21 +249,23 @@ pub fn update(
         defer handle.deinit();
 
         var iter = try self.primary_index.stagedInserts(&handle);
+        defer iter.deinit();
+
         var count: u32 = 0;
         while (try iter.next()) {
             count += 1;
         }
 
+        // TODO make this threshold configurable
         if (count > 10_000) {
-            // TODO create a new row group for the staged inserts
-            // try iter.restart();
-            // try row_group.create(
-            //     self.allocator,
-            //     &self.schema,
-            //     &self.db.segment,
-            //     &self.primary_index,
-            //     &iter,
-            // );
+            try iter.restart();
+            try row_group.create(
+                self.allocator,
+                &self.schema,
+                &self.db.segment,
+                &self.primary_index,
+                &iter,
+            );
         }
 
         return;

@@ -32,6 +32,7 @@ insert_entry: StmtCell,
 find_row_group: StmtCell,
 inserts_iterator: StmtCell,
 inserts_iterator_from_start: StmtCell,
+delete_staged_inserts_range: StmtCell,
 
 sort_key_buf: []?*sqlite_c.sqlite3_value,
 
@@ -143,6 +144,7 @@ pub fn open(
         .find_row_group = undefined,
         .inserts_iterator = undefined,
         .inserts_iterator_from_start = undefined,
+        .delete_staged_inserts_range = undefined,
         .sort_key_buf = sort_key_buf,
     };
     try self.initStatements(static_arena);
@@ -161,6 +163,7 @@ pub fn deinit(self: *Self) void {
     self.find_row_group.deinit();
     self.inserts_iterator.deinit();
     self.inserts_iterator_from_start.deinit();
+    self.delete_staged_inserts_range.deinit();
 }
 
 //
@@ -190,15 +193,19 @@ pub fn insertRowGroupEntry(
     try stmt.bind(.Int64, 2, @intCast(entry.record_count));
     try stmt.bind(.Int64, 3, rowid);
     try stmt.bind(.Int64, 4, entry.rowid_segment_id);
-    for (self.sort_key, 5..) |rank, idx| {
-        try sort_key[rank].bind(stmt, idx);
+    for (sort_key, 5..) |sk_value, idx| {
+        try sk_value.bind(stmt, idx);
     }
     const col_idx_start = self.sort_key.len + 5;
     for (0..self.columns_len, col_idx_start..) |rank, idx| {
-        try stmt.bind(.Int64, rank, entry.column_segment_ids[idx]);
+        try stmt.bind(.Int64, idx, entry.column_segment_ids[rank]);
     }
 
-    try stmt.exec();
+    stmt.exec() catch |e| {
+        const err_msg = sqlite_c.sqlite3_errmsg(self.conn.conn);
+        std.log.err("error executing insert: {s}", .{err_msg});
+        return e;
+    };
 }
 
 /// Handle to a row group entry in the primary index. This handle holds an open statement
@@ -282,7 +289,7 @@ pub fn insertInsertEntry(self: *Self, values: anytype) !i64 {
 
     stmt.exec() catch |e| {
         const err_msg = sqlite_c.sqlite3_errmsg(self.conn.conn);
-        std.log.err("error executing insert: {any} {s}", .{ e, err_msg });
+        std.log.err("error executing insert: {s}", .{err_msg});
         return e;
     };
 
@@ -375,7 +382,7 @@ pub const StagedInsertsIterator = struct {
     }
 
     pub fn readRowId(self: *@This()) ValueRef {
-        return ValueRef{ .value = self.stmt.readSqliteValue(0) };
+        return ValueRef{ .value = self.stmt.readSqliteValue(1) };
     }
 
     pub fn readValue(self: *@This(), idx: usize) ValueRef {
@@ -420,6 +427,32 @@ pub fn stagedInserts(
     return iter;
 }
 
+/// Deletes all staged inserts with sort key >= (`start_sort_key`..., `rowid`) and < the
+/// next row group entry in the table (or the end of the table)
+pub fn deleteStagedInsertsRange(
+    self: *Self,
+    start_sort_key: anytype,
+    start_rowid: i64,
+) !void {
+    const stmt = try self.delete_staged_inserts_range.getStmt(self.conn);
+    defer self.delete_staged_inserts_range.reset();
+
+    for (start_sort_key, 1..) |sk_value, idx| {
+        try sk_value.bind(stmt, idx);
+    }
+    try stmt.bind(.Int64, start_sort_key.len + 1, start_rowid);
+    for (start_sort_key, (start_sort_key.len + 2)..) |sk_value, idx| {
+        try sk_value.bind(stmt, idx);
+    }
+    try stmt.bind(.Int64, (start_sort_key.len * 2) + 2, start_rowid);
+
+    stmt.exec() catch |e| {
+        const err_msg = sqlite_c.sqlite3_errmsg(self.conn.conn);
+        std.log.err("error deleting inserts: {s}", .{err_msg});
+        return e;
+    };
+}
+
 //
 // Statements
 //
@@ -459,26 +492,63 @@ fn initStatements(self: *Self, static_arena: *ArenaAllocator) !void {
         \\SELECT entry_type, rowid, {s}
         \\FROM "_stanchion_{s}_primary_index"
         \\WHERE ({s}, rowid) >= ({s}, ?)
-        \\ORDER BY {s}, rowid DESC
+        \\ORDER BY {s}, rowid ASC
     , .{
         ColumnListFormatter("col_{d}"){ .len = self.columns_len },
         self.table_name,
         ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
         ParameterListFormatter{ .len = self.sort_key.len },
-        ColumnListFormatter("sk_value_{d} DESC"){ .len = self.sort_key.len },
+        ColumnListFormatter("sk_value_{d} ASC"){ .len = self.sort_key.len },
     });
     self.inserts_iterator = StmtCell.init(inserts_iterator_query);
 
     const inserts_iterator_from_start_query = try fmt.allocPrintZ(allocator,
         \\SELECT entry_type, rowid, {s}
         \\FROM "_stanchion_{s}_primary_index"
-        \\ORDER BY {s}, rowid DESC
+        \\ORDER BY {s}, rowid ASC
     , .{
         ColumnListFormatter("col_{d}"){ .len = self.columns_len },
         self.table_name,
-        ColumnListFormatter("sk_value_{d} DESC"){ .len = self.sort_key.len },
+        ColumnListFormatter("sk_value_{d} ASC"){ .len = self.sort_key.len },
     });
     self.inserts_iterator_from_start = StmtCell.init(inserts_iterator_from_start_query);
+
+    const delete_staged_inserts_range_query = try fmt.allocPrintZ(allocator,
+        \\WITH end_rg_entry AS (
+        \\  SELECT {s}, rowid
+        \\  FROM "_stanchion_{s}_primary_index"
+        \\  WHERE ({s}, rowid) > ({s}, ?) AND entry_type = {d}
+        \\  ORDER BY {s}, rowid ASC
+        \\  LIMIT 1
+        \\)
+        \\DELETE FROM "_stanchion_{s}_primary_index"
+        \\WHERE ({s}, rowid) IN (
+        \\  SELECT {s}, pidx.rowid
+        \\  FROM "_stanchion_{s}_primary_index" pidx
+        \\  LEFT JOIN end_rg_entry e
+        \\  WHERE ({s}, pidx.rowid) >= ({s}, ?) AND pidx.entry_type = {d}
+        \\        AND (e.rowid IS NULL OR ({s}, pidx.rowid) < ({s}, e.rowid)))
+    , .{
+        // CTE
+        ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
+        self.table_name,
+        ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
+        ParameterListFormatter{ .len = self.sort_key.len },
+        @intFromEnum(EntryType.RowGroup),
+        ColumnListFormatter("sk_value_{d} ASC"){ .len = self.sort_key.len },
+        // Delete
+        self.table_name,
+        ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
+        // Subquery
+        ColumnListFormatter("pidx.sk_value_{d}"){ .len = self.sort_key.len },
+        self.table_name,
+        ColumnListFormatter("pidx.sk_value_{d}"){ .len = self.sort_key.len },
+        ParameterListFormatter{ .len = self.sort_key.len },
+        @intFromEnum(EntryType.Insert),
+        ColumnListFormatter("pidx.sk_value_{d}"){ .len = self.sort_key.len },
+        ColumnListFormatter("e.sk_value_{d}"){ .len = self.sort_key.len },
+    });
+    self.delete_staged_inserts_range = StmtCell.init(delete_staged_inserts_range_query);
 }
 
 fn ColumnListFormatter(comptime column_name_template: []const u8) type {
