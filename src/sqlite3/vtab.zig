@@ -358,15 +358,15 @@ pub fn VirtualTable(comptime Table: type) type {
                 .xColumn = null,
                 .xRowid = null,
                 .xUpdate = xUpdate,
-                .xBegin = null,
+                .xBegin = xBegin,
                 .xSync = null,
-                .xCommit = null,
-                .xRollback = null,
+                .xCommit = xCommit,
+                .xRollback = xRollback,
                 .xFindFunction = null,
                 .xRename = null,
-                .xSavepoint = null,
-                .xRelease = null,
-                .xRollbackTo = null,
+                .xSavepoint = xSavepoint,
+                .xRelease = xRelease,
+                .xRollbackTo = xRollbackTo,
                 .xShadowName = null,
             }
         else
@@ -385,15 +385,15 @@ pub fn VirtualTable(comptime Table: type) type {
                 .xColumn = null,
                 .xRowid = null,
                 .xUpdate = xUpdate,
-                .xBegin = null,
+                .xBegin = xBegin,
                 .xSync = null,
-                .xCommit = null,
-                .xRollback = null,
+                .xCommit = xCommit,
+                .xRollback = xRollback,
                 .xFindFunction = null,
                 .xRename = null,
-                .xSavepoint = null,
-                .xRelease = null,
-                .xRollbackTo = null,
+                .xSavepoint = xSavepoint,
+                .xRelease = xRelease,
+                .xRollbackTo = xRollbackTo,
             };
 
         table: Table,
@@ -573,6 +573,48 @@ pub fn VirtualTable(comptime Table: type) type {
         //     row_id_ptr: [*c]c.sqlite3_int64,
         // ) callconv(.C) c_int {
         // }
+
+        fn xBegin(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
+            return callTableCallback(Table.begin, .{}, vtab);
+        }
+
+        fn xCommit(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
+            return callTableCallback(Table.commit, .{}, vtab);
+        }
+
+        fn xRollback(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
+            return callTableCallback(Table.rollback, .{}, vtab);
+        }
+
+        fn xSavepoint(vtab: [*c]c.sqlite3_vtab, savepoint_id: c_int) callconv(.C) c_int {
+            const sid: i32 = @intCast(savepoint_id);
+            return callTableCallback(Table.savepoint, .{sid}, vtab);
+        }
+
+        fn xRelease(vtab: [*c]c.sqlite3_vtab, savepoint_id: c_int) callconv(.C) c_int {
+            const sid: i32 = @intCast(savepoint_id);
+            return callTableCallback(Table.release, .{sid}, vtab);
+        }
+
+        fn xRollbackTo(vtab: [*c]c.sqlite3_vtab, savepoint_id: c_int) callconv(.C) c_int {
+            const sid: i32 = @intCast(savepoint_id);
+            return callTableCallback(Table.rollbackTo, .{sid}, vtab);
+        }
+
+        fn callTableCallback(
+            comptime function: anytype,
+            args: anytype,
+            vtab: [*c]c.sqlite3_vtab,
+        ) c_int {
+            const state = @fieldParentPtr(State, "vtab", vtab);
+
+            @call(.auto, function, .{state.table} ++ args) catch |e| {
+                std.log.err("error calling savepoint on table: {any}", .{e});
+                return c.SQLITE_ERROR;
+            };
+
+            return c.SQLITE_OK;
+        }
     };
 }
 

@@ -8,7 +8,7 @@ const Self = @This();
 
 pub const Error = error{
     QueryReturnedNoRows,
-} || @import("./sqlite3/errors.zig").Error;
+} || @import("sqlite3/errors.zig").Error;
 
 pub const Migrations = struct {
     const setup =
@@ -25,6 +25,7 @@ pub const Migrations = struct {
         \\  -- when referenced in sql queries, so use `collate nocase` on the name column
         \\  -- to match sqlite's behavior
         \\  name TEXT NOT NULL COLLATE NOCASE,
+        \\  next_rowid INTEGER NOT NULL,
         \\  UNIQUE (name)
         \\) STRICT
         ,

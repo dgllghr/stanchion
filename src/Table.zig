@@ -11,6 +11,8 @@ const Stmt = @import("sqlite3/Stmt.zig");
 const vtab = @import("sqlite3/vtab.zig");
 const sqlite_c = @import("sqlite3/c.zig").c;
 
+const StmtCell = @import("StmtCell.zig");
+
 const DbError = @import("db.zig").Error;
 const Migrations = @import("db.zig").Migrations;
 
@@ -36,6 +38,7 @@ id: i64,
 name: []const u8,
 schema: Schema,
 primary_index: PrimaryIndex,
+last_write_rowid: i64,
 
 pub const InitError = error{
     NoColumns,
@@ -114,6 +117,7 @@ pub fn create(
         .name = name,
         .schema = s,
         .primary_index = primary_index,
+        .last_write_rowid = 1,
     };
 }
 
@@ -202,6 +206,7 @@ pub fn connect(
         .name = name,
         .schema = s,
         .primary_index = primary_index,
+        .last_write_rowid = try db.table.readNextRowid(table_id),
     };
 }
 
@@ -280,20 +285,72 @@ pub fn update(
 // pub fn open(self: *Self) !Cursor {
 // }
 
+pub fn begin(_: *Self) !void {
+    std.log.debug("txn begin", .{});
+}
+
+pub fn commit(self: *Self) !void {
+    std.log.debug("txn commit", .{});
+    try self.flushNextRowid();
+}
+
+pub fn rollback(self: *Self) !void {
+    std.log.debug("txn rollback", .{});
+    try self.rollbackNextRowid();
+}
+
+pub fn savepoint(self: *Self, savepoint_id: i32) !void {
+    std.log.debug("txn savepoint {d}", .{savepoint_id});
+    try self.flushNextRowid();
+}
+
+pub fn release(self: *Self, savepoint_id: i32) !void {
+    std.log.debug("txn release {d}", .{savepoint_id});
+    try self.rollbackNextRowid();
+}
+
+pub fn rollbackTo(self: *Self, savepoint_id: i32) !void {
+    std.log.debug("txn rollback to {d}", .{savepoint_id});
+    try self.rollbackNextRowid();
+}
+
+fn flushNextRowid(self: *Self) !void {
+    if (self.last_write_rowid != self.primary_index.next_rowid) {
+        try self.db.table.updateRowid(self.id, self.primary_index.next_rowid);
+        self.last_write_rowid = self.primary_index.next_rowid;
+    }
+}
+
+fn rollbackNextRowid(self: *Self) !void {
+    const rowid = try self.db.table.readNextRowid(self.id);
+    self.primary_index.next_rowid = rowid;
+    self.last_write_rowid = rowid;
+}
+
 const Db = struct {
     conn: Conn,
     create_table: ?Stmt,
     load_table: ?Stmt,
+    read_next_rowid: StmtCell,
+    update_next_rowid: StmtCell,
 
     pub fn init(conn: Conn) Db {
         return .{
             .conn = conn,
             .create_table = null,
             .load_table = null,
+            .read_next_rowid = StmtCell.init(
+                \\SELECT next_rowid FROM _stanchion_tables WHERE id = ?
+            ),
+            .update_next_rowid = StmtCell.init(
+                \\UPDATE _stanchion_tables SET next_rowid = ? WHERE id = ?
+            ),
         };
     }
 
     pub fn deinit(self: *Db) void {
+        self.update_next_rowid.deinit();
+        self.read_next_rowid.deinit();
         if (self.create_table) |stmt| {
             stmt.deinit();
         }
@@ -305,8 +362,8 @@ const Db = struct {
     pub fn insertTable(self: *Db, name: []const u8) !i64 {
         if (self.create_table == null) {
             self.create_table = try self.conn.prepare(
-                \\INSERT INTO _stanchion_tables (name)
-                \\VALUES (?)
+                \\INSERT INTO _stanchion_tables (name, next_rowid)
+                \\VALUES (?, 1)
                 \\RETURNING id
             );
         }
@@ -336,5 +393,27 @@ const Db = struct {
         const table_id = stmt.read(.Int64, false, 0);
         try stmt.reset();
         return table_id;
+    }
+
+    pub fn readNextRowid(self: *Db, table_id: i64) !i64 {
+        const stmt = try self.read_next_rowid.getStmt(self.conn);
+        defer self.read_next_rowid.reset();
+
+        try stmt.bind(.Int64, 1, table_id);
+
+        if (!try stmt.next()) {
+            return DbError.QueryReturnedNoRows;
+        }
+        return stmt.read(.Int64, false, 0);
+    }
+
+    pub fn updateRowid(self: *Db, table_id: i64, rowid: i64) !void {
+        const stmt = try self.update_next_rowid.getStmt(self.conn);
+        defer self.update_next_rowid.reset();
+
+        try stmt.bind(.Int64, 1, rowid);
+        try stmt.bind(.Int64, 2, table_id);
+
+        try stmt.exec();
     }
 };
