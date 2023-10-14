@@ -3,7 +3,6 @@ const fmt = std.fmt;
 const mem = std.mem;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
-const Type = std.builtin.Type;
 
 const ChangeSet = @import("sqlite3/ChangeSet.zig");
 const Conn = @import("sqlite3/Conn.zig");
@@ -27,6 +26,7 @@ const row_group = @import("row_group.zig");
 
 const Self = @This();
 
+// TODO remove this
 allocator: Allocator,
 table_static_arena: ArenaAllocator,
 db: struct {
@@ -240,9 +240,9 @@ pub fn update(
     change_set: ChangeSet,
 ) !void {
     if (change_set.changeType() == .Insert) {
-        rowid.* = self.primary_index.insertInsertEntry(change_set) catch |err| {
-            cb_ctx.setErrorMessage("failed to log insert", .{});
-            return err;
+        rowid.* = self.primary_index.insertInsertEntry(change_set) catch |e| {
+            cb_ctx.setErrorMessage("failed insert insert entry: {any}", .{e});
+            return e;
         };
 
         // Count the number of pending inserts for a row group and merge them if the
@@ -279,8 +279,19 @@ pub fn update(
     @panic("todo");
 }
 
-// pub fn bestIndex(self: *Self) !void {
-// }
+pub fn bestIndex(
+    _: *Self,
+    _: *vtab.CallbackContext,
+    _: *vtab.BestIndexBuilder,
+) !void {
+    // TODO could `estimatedCost` be as simple as the number of row groups accessed? or
+    //      how about number of rows (row groups * record count) * number of columns? is
+    //      columns accessed in the query even available here? actually `estimatedRows`
+    //      is where the row count should be supplied
+    // for (best_index.constraints) |*c| {
+    //     std.log.debug("constraint on column {d}, usable: {any}", .{c.column, c.usable},);
+    // }
+}
 
 // pub fn open(self: *Self) !Cursor {
 // }

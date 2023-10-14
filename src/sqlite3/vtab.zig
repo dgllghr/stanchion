@@ -306,9 +306,8 @@ pub fn VirtualTable(comptime Table: type) type {
     const State = struct {
         const Self = @This();
 
-        /// vtab must come first so sqlite interprets this as a `sqlite3_vtab` struct
-        /// The different functions receive a pointer to a vtab so we have to use
-        /// fieldParentPtr to get our state.
+        /// The different functions receive a pointer to a vtab so use `fieldParentPtr`
+        /// to get the state.
         vtab: c.sqlite3_vtab,
         allocator: mem.Allocator,
         /// The table is the actual virtual table implementation.
@@ -329,12 +328,14 @@ pub fn VirtualTable(comptime Table: type) type {
         fn disconnect(self: *Self) void {
             // TODO table.destroy and table.disconnect might need to return errors
             self.table.disconnect();
+            self.allocator.destroy(self.table);
             self.allocator.destroy(self);
         }
 
         fn destroy(self: *Self) void {
             // TODO table.destroy and table.disconnect might need to return errors
             self.table.destroy();
+            self.allocator.destroy(self.table);
             self.allocator.destroy(self);
         }
     };
@@ -347,7 +348,7 @@ pub fn VirtualTable(comptime Table: type) type {
                 .iVersion = 0,
                 .xCreate = xCreate,
                 .xConnect = xConnect,
-                .xBestIndex = null,
+                .xBestIndex = xBestIndex,
                 .xDisconnect = xDisconnect,
                 .xDestroy = xDestroy,
                 .xOpen = null,
@@ -374,7 +375,7 @@ pub fn VirtualTable(comptime Table: type) type {
                 .iVersion = 0,
                 .xCreate = xCreate,
                 .xConnect = xConnect,
-                .xBestIndex = null,
+                .xBestIndex = xBestIndex,
                 .xDisconnect = xDisconnect,
                 .xDestroy = xDestroy,
                 .xOpen = null,
@@ -518,11 +519,28 @@ pub fn VirtualTable(comptime Table: type) type {
             return c.SQLITE_OK;
         }
 
-        // fn xBestIndex(
-        //     vtab: [*c]c.sqlite3_vtab,
-        //     index_info_ptr: [*c]c.sqlite3_index_info,
-        // ) callconv(.C) c_int {
-        // }
+        fn xBestIndex(
+            vtab: [*c]c.sqlite3_vtab,
+            index_info_ptr: [*c]c.sqlite3_index_info,
+        ) callconv(.C) c_int {
+            const state = @fieldParentPtr(State, "vtab", vtab);
+
+            var arena = heap.ArenaAllocator.init(state.allocator);
+            defer arena.deinit();
+            var cb_ctx = CallbackContext{ .arena = &arena };
+
+            var best_index = BestIndexBuilder.init(arena.allocator(), index_info_ptr) catch |e| {
+                std.log.err("error initializing BestIndexBuilder: {any}", .{e});
+                return c.SQLITE_ERROR;
+            };
+
+            state.table.bestIndex(&cb_ctx, &best_index) catch |e| {
+                std.log.err("error calling bestIndex on table: {any}", .{e});
+                return c.SQLITE_ERROR;
+            };
+
+            return c.SQLITE_OK;
+        }
 
         // fn xOpen(
         //     vtab: [*c]c.sqlite3_vtab,
@@ -596,7 +614,10 @@ pub fn VirtualTable(comptime Table: type) type {
             return callTableCallback(Table.release, .{sid}, vtab);
         }
 
-        fn xRollbackTo(vtab: [*c]c.sqlite3_vtab, savepoint_id: c_int) callconv(.C) c_int {
+        fn xRollbackTo(
+            vtab: [*c]c.sqlite3_vtab,
+            savepoint_id: c_int,
+        ) callconv(.C) c_int {
             const sid: i32 = @intCast(savepoint_id);
             return callTableCallback(Table.rollbackTo, .{sid}, vtab);
         }
@@ -607,8 +628,9 @@ pub fn VirtualTable(comptime Table: type) type {
             vtab: [*c]c.sqlite3_vtab,
         ) c_int {
             const state = @fieldParentPtr(State, "vtab", vtab);
+            const full_args = .{state.table} ++ args;
 
-            @call(.auto, function, .{state.table} ++ args) catch |e| {
+            @call(.auto, function, full_args) catch |e| {
                 std.log.err("error calling savepoint on table: {any}", .{e});
                 return c.SQLITE_ERROR;
             };
