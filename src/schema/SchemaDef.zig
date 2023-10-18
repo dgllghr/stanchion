@@ -122,7 +122,7 @@ fn parseDataType(r: *Reader) !ColumnType.DataType {
     } else |_| if (consumeMatchBlobType(r)) {
         return ColumnType.DataType.Blob;
     } else |_| if (consumeMatchTextType(r)) {
-        return ColumnType.DataType.Blob;
+        return ColumnType.DataType.Text;
     } else |_| {
         return ParseError.InvalidDataType;
     }
@@ -136,6 +136,8 @@ test "parse data type" {
         .{ ColumnType.DataType.Integer, "integer" },
         .{ ColumnType.DataType.Boolean, "bOoleAN" },
         .{ ColumnType.DataType.Float, "FLOAT" },
+        .{ ColumnType.DataType.Text, "text" },
+        .{ ColumnType.DataType.Blob, "BLOB" },
     };
 
     for (inputs) |input| {
