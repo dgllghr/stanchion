@@ -29,7 +29,8 @@ sort_key: []const usize,
 next_rowid: i64,
 
 insert_entry: StmtCell,
-find_row_group: StmtCell,
+get_row_group_entry: StmtCell,
+find_preceding_row_group: StmtCell,
 inserts_iterator: StmtCell,
 inserts_iterator_from_start: StmtCell,
 delete_staged_inserts_range: StmtCell,
@@ -141,7 +142,8 @@ pub fn open(
         .sort_key = sort_key,
         .next_rowid = next_rowid,
         .insert_entry = undefined,
-        .find_row_group = undefined,
+        .get_row_group_entry = undefined,
+        .find_preceding_row_group = undefined,
         .inserts_iterator = undefined,
         .inserts_iterator_from_start = undefined,
         .delete_staged_inserts_range = undefined,
@@ -160,7 +162,8 @@ pub fn open(
 /// `open`
 pub fn deinit(self: *Self) void {
     self.insert_entry.deinit();
-    self.find_row_group.deinit();
+    self.get_row_group_entry.deinit();
+    self.find_preceding_row_group.deinit();
     self.inserts_iterator.deinit();
     self.inserts_iterator_from_start.deinit();
     self.delete_staged_inserts_range.deinit();
@@ -208,6 +211,31 @@ pub fn insertRowGroupEntry(
     };
 }
 
+pub fn readRowGroupEntry(
+    self: *Self,
+    entry: *RowGroupEntry,
+    sort_key: anytype,
+    rowid: i64,
+) !void {
+    std.debug.assert(entry.column_segment_ids.len == self.columns_len);
+
+    const stmt = try self.get_row_group_entry.getStmt(self.conn);
+    defer self.get_row_group_entry.reset();
+
+    for (sort_key, 1..) |sk_value, idx| {
+        try stmt.bindSqliteValue(idx, sk_value);
+    }
+    try stmt.bind(.Int64, self.sort_key.len + 1, rowid);
+
+    _ = try stmt.next();
+
+    entry.record_count = @intCast(stmt.read(.Int64, false, 0));
+    entry.rowid_segment_id = stmt.read(.Int64, false, 1);
+    for (entry.column_segment_ids, 2..) |*seg_id, idx| {
+        seg_id.* = stmt.read(.Int64, false, idx);
+    }
+}
+
 /// Handle to a row group entry in the primary index. This handle holds an open statement
 /// in sqlite and must be released with `deinit` after use. Only one of these handles can
 /// be open in the primary index at a time.
@@ -237,8 +265,8 @@ pub fn precedingRowGroup(
     rowid: i64,
     row: anytype,
 ) !RowGroupEntryHandle {
-    const stmt = try self.find_row_group.getStmt(self.conn);
-    errdefer self.find_row_group.reset();
+    const stmt = try self.find_preceding_row_group.getStmt(self.conn);
+    errdefer self.find_preceding_row_group.reset();
 
     for (self.sort_key, 1..) |col_idx, idx| {
         try row.readValue(col_idx).bind(stmt, idx);
@@ -247,7 +275,7 @@ pub fn precedingRowGroup(
 
     const has_row_group = try stmt.next();
     if (!has_row_group) {
-        self.find_row_group.reset();
+        self.find_preceding_row_group.reset();
         return .start;
     }
 
@@ -257,7 +285,7 @@ pub fn precedingRowGroup(
     const rg_rowid = stmt.read(.Int64, false, self.sort_key.len);
 
     return .{ .row_group = .{
-        .cell = &self.find_row_group,
+        .cell = &self.find_preceding_row_group,
         .sort_key = self.sort_key_buf,
         .rowid = rg_rowid,
     } };
@@ -472,12 +500,25 @@ fn initStatements(self: *Self, static_arena: *ArenaAllocator) !void {
     });
     self.insert_entry = StmtCell.init(insert_entry_query);
 
-    const find_row_group_query = try fmt.allocPrintZ(allocator,
-        \\  SELECT {s}, rowid
-        \\  FROM "_stanchion_{s}_primary_index"
-        \\  WHERE ({s}, rowid) <= ({s}, ?) AND entry_type = {d}
-        \\  ORDER BY {s}, rowid DESC
-        \\  LIMIT 1
+    const get_row_group_entry_query = try fmt.allocPrintZ(allocator,
+        \\SELECT record_count, rowid_segment_id, {s}
+        \\FROM "_stanchion_{s}_primary_index"
+        \\WHERE ({s}, rowid) = ({s}, ?) AND entry_type = {d}
+    , .{
+        ColumnListFormatter("col_{d}"){ .len = self.columns_len },
+        self.table_name,
+        ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
+        ParameterListFormatter{ .len = self.sort_key.len },
+        @intFromEnum(EntryType.RowGroup),
+    });
+    self.get_row_group_entry = StmtCell.init(get_row_group_entry_query);
+
+    const find_preceding_row_group_query = try fmt.allocPrintZ(allocator,
+        \\SELECT {s}, rowid
+        \\FROM "_stanchion_{s}_primary_index"
+        \\WHERE ({s}, rowid) <= ({s}, ?) AND entry_type = {d}
+        \\ORDER BY {s}, rowid DESC
+        \\LIMIT 1
     , .{
         ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
         self.table_name,
@@ -486,7 +527,7 @@ fn initStatements(self: *Self, static_arena: *ArenaAllocator) !void {
         @intFromEnum(EntryType.RowGroup),
         ColumnListFormatter("sk_value_{d} DESC"){ .len = self.sort_key.len },
     });
-    self.find_row_group = StmtCell.init(find_row_group_query);
+    self.find_preceding_row_group = StmtCell.init(find_preceding_row_group_query);
 
     const inserts_iterator_query = try fmt.allocPrintZ(allocator,
         \\SELECT entry_type, rowid, {s}

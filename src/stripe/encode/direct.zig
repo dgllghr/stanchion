@@ -29,6 +29,12 @@ pub fn Decoder(
         }
 
         pub fn decodeAll(self: *Self, blob: anytype, dst: []Value) !void {
+            if (@sizeOf(Value) == 1) {
+                try blob.readAt(dst, self.index);
+                self.index += dst.len;
+                return;
+            }
+
             // TODO this could be made more efficient
             for (dst) |*cell| {
                 cell.* = try self.decode(blob);
