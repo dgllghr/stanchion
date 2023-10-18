@@ -29,10 +29,6 @@ pub fn Optimizer(comptime Validators: type, comptime Encoder: type) type {
             return .{ .validators = validators };
         }
 
-        pub fn unused(self: Self) bool {
-            return @field(self.validators, validator_fields[0].name).unused();
-        }
-
         pub fn next(self: *Self, value: Value) void {
             inline for (validator_fields) |f| {
                 var validator = &@field(self.validators, f.name);

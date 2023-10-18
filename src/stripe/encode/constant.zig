@@ -63,10 +63,6 @@ pub fn Validator(
             };
         }
 
-        pub fn unused(self: Self) bool {
-            return self.state == .empty;
-        }
-
         pub fn next(self: *Self, value: Value) void {
             switch (self.state) {
                 .valid => |curr_value| {

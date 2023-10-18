@@ -95,11 +95,22 @@ pub const Planner = struct {
         var header = Header.init();
 
         var present_encoder: ?stripe.Bool.Encoder = null;
-        // All values present (no nulls) => omit the present stripe
-        const no_nulls = self.present.unused();
+        const present = try self.present.end();
+        // TODO errdefer
+
+        // Optimization: skip the present stripe if all values present (no nulls) and
+        // skip the primary stripe if no values present (all nulls)
+        // TODO ensure Constant encoding is always chosen when all values are the same
+        //      (not guaranteed for a number of booleans that fits in a bit-packed byte)
+        var all_nulls = false;
+        var no_nulls = false;
+        if (present.meta.encoding == .Constant) {
+            no_nulls = present.encoder.constant.value;
+            all_nulls = !no_nulls;
+        }
+
+        // All values present (no nulls) => skip the present stripe
         if (!no_nulls) {
-            const present = try self.present.end();
-            // TODO errdefer
             header.present_stripe = present.meta;
             present_encoder = present.encoder;
         }
@@ -114,7 +125,6 @@ pub const Planner = struct {
 
         var primary_encoder: ?PrimaryEncoder = null;
         // All values not present (all nulls) => omit the primary stripe
-        const all_nulls = self.primary.unused();
         if (!all_nulls) {
             switch (self.primary) {
                 inline else => |*v, tag| {
@@ -246,7 +256,7 @@ pub const Writer = struct {
         const value_type = value.valueType();
 
         if (value_type == .Null) {
-            try self.present.?.encoder.encode(self.present.?.blob, false);
+            try self.present.?.encoder.encode(&self.present.?.blob, false);
             return;
         }
 
@@ -261,7 +271,7 @@ pub const Writer = struct {
                 .Byte => |*byte_encoder| {
                     const bytes =
                         if (value_type == .Text) value.asText() else value.asBlob();
-                    var length = self.length.?;
+                    var length = &self.length.?;
                     try length.encoder.encode(
                         &length.blob,
                         @as(i64, @intCast(bytes.len)),
@@ -361,7 +371,7 @@ test "segment writer" {
 
 /// TODO it would likely be more efficient to make this an union(enum) at the top level
 ///      so that there is a single branch per function call
-const Reader = struct {
+pub const Reader = struct {
     const Self = @This();
 
     handle: Handle,
@@ -402,7 +412,7 @@ const Reader = struct {
             );
             try decoder.begin(blob);
             length = .{ .blob = blob, .decoder = decoder };
-            offset += header.present_stripe.byte_len;
+            offset += header.length_stripe.byte_len;
         }
         if (header.primary_stripe.byte_len > 0) {
             const blob = handle.blob.sliceFrom(offset);
@@ -440,11 +450,11 @@ const Reader = struct {
             switch (prim_stripe.decoder) {
                 .Bool => |*d| primary = .{ .bool = try d.decode(prim_stripe.blob) },
                 .Int => |*d| primary = .{ .int = try d.decode(prim_stripe.blob) },
-                .Byte => {
-                    var len_stripe = self.length.?;
+                .Byte => |*d| {
+                    var len_stripe = &self.length.?;
                     const length = try len_stripe.decoder.decode(len_stripe.blob);
                     try bytes_buf.resize(allocator, @intCast(length));
-                    try prim_stripe.decoder.Byte.decodeAll(
+                    try d.decodeAll(
                         prim_stripe.blob,
                         bytes_buf.items,
                     );
@@ -469,7 +479,7 @@ const Reader = struct {
             switch (prim_stripe.decoder) {
                 .Bool => |*d| primary = .{ .bool = try d.decode(prim_stripe.blob) },
                 .Int => |*d| primary = .{ .int = try d.decode(prim_stripe.blob) },
-                .Byte => @panic("allocation required while reading value"),
+                .Byte => @panic("allocation required to read value"),
             }
         }
 
@@ -485,12 +495,12 @@ const Reader = struct {
         if (present) {
             const prim_stripe = &self.primary.?;
             switch (prim_stripe.decoder) {
-                .Byte => {
+                .Byte => |*d| {
                     const len_stripe = &self.length.?;
                     const length = try len_stripe.decoder.decode(len_stripe.blob);
-                    prim_stripe.decoder.Byte.skip(length);
+                    d.skip(@intCast(length));
                 },
-                inline else => |*d| d.skip(),
+                inline else => |*d| d.skip(1),
             }
         }
     }
@@ -606,10 +616,10 @@ pub const Value = struct {
     }
 
     pub fn asBlob(self: Self) []const u8 {
-        return self.primary.?.bytes.items;
+        return self.primary.?.bytes;
     }
 
     pub fn asText(self: Self) []const u8 {
-        return self.primary.?.bytes.items;
+        return self.primary.?.bytes;
     }
 };

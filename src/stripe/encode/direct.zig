@@ -56,10 +56,6 @@ pub fn Validator(
             return .{ .count = 0 };
         }
 
-        pub fn unused(self: Self) bool {
-            return self.count == 0;
-        }
-
         pub fn next(self: *Self, _: Value) void {
             self.count += 1;
         }

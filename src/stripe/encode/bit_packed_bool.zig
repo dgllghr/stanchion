@@ -80,10 +80,6 @@ pub const Validator = struct {
         return .{ .count = 0 };
     }
 
-    pub fn unused(self: Self) bool {
-        return self.count == 0;
-    }
-
     pub fn next(self: *Self, _: bool) void {
         self.count += 1;
     }
