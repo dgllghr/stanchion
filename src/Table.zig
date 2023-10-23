@@ -15,9 +15,10 @@ const StmtCell = @import("StmtCell.zig");
 const DbError = @import("db.zig").Error;
 const Migrations = @import("db.zig").Migrations;
 
-const schema = @import("schema.zig");
-const SchemaDef = schema.SchemaDef;
-const Schema = schema.Schema;
+const schema_mod = @import("schema.zig");
+const SchemaDb = schema_mod.Db;
+const SchemaDef = schema_mod.SchemaDef;
+const Schema = schema_mod.Schema;
 
 const segment = @import("segment.zig");
 
@@ -30,7 +31,7 @@ const Self = @This();
 allocator: Allocator,
 table_static_arena: ArenaAllocator,
 db: struct {
-    schema: schema.Db,
+    schema: SchemaDb,
     table: Db,
     segment: segment.Db,
 },
@@ -79,7 +80,7 @@ pub fn create(
 
     var db = .{
         .table = Db.init(conn),
-        .schema = schema.Db.init(conn),
+        .schema = SchemaDb.init(conn),
         .segment = segment.Db.init(conn),
     };
 
@@ -169,7 +170,7 @@ pub fn connect(
 
     var db = .{
         .table = Db.init(conn),
-        .schema = schema.Db.init(conn),
+        .schema = SchemaDb.init(conn),
         .segment = segment.Db.init(conn),
     };
 
@@ -276,7 +277,7 @@ pub fn update(
         return;
     }
 
-    @panic("todo");
+    @panic("delete and update are not supported");
 }
 
 pub fn bestIndex(
@@ -293,8 +294,14 @@ pub fn bestIndex(
     // }
 }
 
-// pub fn open(self: *Self) !Cursor {
-// }
+pub fn open(self: *Self) !Cursor {
+    return Cursor.init(
+        self.allocator,
+        &self.db.segment,
+        &self.schema,
+        &self.primary_index,
+    );
+}
 
 pub fn begin(_: *Self) !void {
     std.log.debug("txn begin", .{});
@@ -337,6 +344,68 @@ fn rollbackNextRowid(self: *Self) !void {
     self.primary_index.next_rowid = rowid;
     self.last_write_rowid = rowid;
 }
+
+pub const Cursor = struct {
+    pidx_cursor: PrimaryIndex.Cursor,
+    rg_cursor: row_group.Cursor,
+    in_row_group: bool,
+    eof: bool,
+
+    pub fn init(
+        allocator: Allocator,
+        segment_db: *segment.Db,
+        schema: *const Schema,
+        primary_index: *PrimaryIndex,
+    ) !Cursor {
+        var pidx_cursor = try primary_index.cursor();
+        errdefer pidx_cursor.deinit();
+        const rg_cursor = try row_group.Cursor.init(allocator, segment_db, schema);
+        return .{
+            .pidx_cursor = pidx_cursor,
+            .rg_cursor = rg_cursor,
+            .in_row_group = false,
+            .eof = false,
+        };
+    }
+
+    pub fn deinit(self: *Cursor) void {
+        self.rg_cursor.deinit();
+        self.pidx_cursor.deinit();
+    }
+
+    pub fn begin(self: *Cursor) !void {
+        try self.next();
+    }
+
+    pub fn next(self: *Cursor) !void {
+        if (self.in_row_group) {
+            const has_next = try self.rg_cursor.next();
+            if (has_next) {
+                return;
+            }
+            self.in_row_group = false;
+        }
+
+        const has_next = try self.pidx_cursor.next();
+        if (has_next) {
+            if (self.pidx_cursor.entryType() == .RowGroup) {
+                self.rg_cursor.reset();
+                // Read the row group into the rg_cursor
+                try self.pidx_cursor.readRowGroupEntry(self.rg_cursor.rowGroup());
+                self.in_row_group = true;
+            }
+            return;
+        }
+        self.eof = true;
+    }
+
+    pub fn rowid(self: *Cursor) !i64 {
+        if (self.in_row_group) {
+            return self.rg_cursor.readRowid();
+        }
+        return self.pidx_cursor.readRowid();
+    }
+};
 
 const Db = struct {
     conn: Conn,

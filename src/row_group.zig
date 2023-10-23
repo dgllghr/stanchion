@@ -216,14 +216,14 @@ pub const Cursor = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        if (self.rowid_segment) |*s| {
-            s.deinit(self.value_buffer_allocator);
-        }
-        for (self.segments) |*seg| {
-            if (seg) |*s| {
-                s.deinit(self.value_buffer_allocator);
-            }
-        }
+        // if (self.rowid_segment) |*s| {
+        //     s.deinit(self.value_buffer_allocator);
+        // }
+        // for (self.segments) |*seg| {
+        //     if (seg) |*s| {
+        //         s.deinit(self.value_buffer_allocator);
+        //     }
+        // }
         for (self.value_buffers) |*buf| {
             buf.deinit(self.value_buffer_allocator);
         }
@@ -235,14 +235,14 @@ pub const Cursor = struct {
     }
 
     pub fn reset(self: *Self) void {
-        self.index = 0;
+        self.index = 1;
 
         self.rowid_segment = null;
         for (self.segments) |*seg| {
-            if (seg) |*s| {
-                s.deinit(self.value_buffer_allocator);
-                s.* = null;
-            }
+            // if (seg.*) |*s| {
+            //     s.deinit(self.value_buffer_allocator);
+            // }
+            seg.* = null;
         }
 
         self.row_rowid = null;

@@ -34,6 +34,7 @@ find_preceding_row_group: StmtCell,
 inserts_iterator: StmtCell,
 inserts_iterator_from_start: StmtCell,
 delete_staged_inserts_range: StmtCell,
+entries_iterator: StmtCell,
 
 sort_key_buf: []?*sqlite_c.sqlite3_value,
 
@@ -147,6 +148,7 @@ pub fn open(
         .inserts_iterator = undefined,
         .inserts_iterator_from_start = undefined,
         .delete_staged_inserts_range = undefined,
+        .entries_iterator = undefined,
         .sort_key_buf = sort_key_buf,
     };
     try self.initStatements(static_arena);
@@ -167,6 +169,7 @@ pub fn deinit(self: *Self) void {
     self.inserts_iterator.deinit();
     self.inserts_iterator_from_start.deinit();
     self.delete_staged_inserts_range.deinit();
+    self.entries_iterator.deinit();
 }
 
 //
@@ -482,6 +485,51 @@ pub fn deleteStagedInsertsRange(
 }
 
 //
+// Cursor
+//
+
+pub const Cursor = struct {
+    stmt: Stmt,
+    cell: *StmtCell,
+
+    pub fn deinit(self: *@This()) void {
+        self.cell.reset();
+    }
+
+    pub fn next(self: *@This()) !bool {
+        return self.stmt.next();
+    }
+
+    pub fn entryType(self: @This()) EntryType {
+        return @enumFromInt(self.stmt.read(.Int32, false, 0));
+    }
+
+    pub fn readRowGroupEntry(self: @This(), entry: *RowGroupEntry) !void {
+        std.debug.assert(self.entryType() == .RowGroup);
+        entry.record_count = @intCast(self.stmt.read(.Int64, false, 2));
+        entry.rowid_segment_id = self.stmt.read(.Int64, false, 3);
+        for (entry.column_segment_ids, 4..) |*seg_id, idx| {
+            seg_id.* = self.stmt.read(.Int64, false, idx);
+        }
+    }
+
+    pub fn readRowid(self: @This()) i64 {
+        return self.stmt.read(.Int64, false, 1);
+    }
+
+    pub fn readColumnValue(self: @This(), idx: usize) ValueRef {
+        return self.stmt.readSqliteValue(idx);
+    }
+};
+
+pub fn cursor(self: *Self) !Cursor {
+    return Cursor {
+        .stmt = try self.entries_iterator.getStmt(self.conn),
+        .cell = &self.entries_iterator,
+    };
+}
+
+//
 // Statements
 //
 
@@ -553,6 +601,17 @@ fn initStatements(self: *Self, static_arena: *ArenaAllocator) !void {
         ColumnListFormatter("sk_value_{d} ASC"){ .len = self.sort_key.len },
     });
     self.inserts_iterator_from_start = StmtCell.init(inserts_iterator_from_start_query);
+
+    const entries_iterator_query = try fmt.allocPrintZ(allocator,
+        \\SELECT entry_type, rowid, record_count, rowid_segment_id, {s}
+        \\FROM "_stanchion_{s}_primary_index"
+        \\ORDER BY {s}, rowid ASC
+    , .{
+        ColumnListFormatter("col_{d}"){ .len = self.columns_len },
+        self.table_name,
+        ColumnListFormatter("sk_value_{d} ASC"){ .len = self.sort_key.len },
+    });
+    self.entries_iterator = StmtCell.init(entries_iterator_query);
 
     const delete_staged_inserts_range_query = try fmt.allocPrintZ(allocator,
         \\WITH end_rg_entry AS (

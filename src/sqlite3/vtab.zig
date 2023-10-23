@@ -340,6 +340,14 @@ pub fn VirtualTable(comptime Table: type) type {
         }
     };
 
+    const CursorState = struct {
+        const Self = @This();
+
+        vtab_cursor: c.sqlite3_vtab_cursor,
+        allocator: mem.Allocator,
+        cursor: Table.Cursor,
+    };
+
     return struct {
         const Self = @This();
 
@@ -351,13 +359,13 @@ pub fn VirtualTable(comptime Table: type) type {
                 .xBestIndex = xBestIndex,
                 .xDisconnect = xDisconnect,
                 .xDestroy = xDestroy,
-                .xOpen = null,
-                .xClose = null,
-                .xFilter = null,
-                .xNext = null,
-                .xEof = null,
+                .xOpen = xOpen,
+                .xClose = xClose,
+                .xFilter = xFilter,
+                .xNext = xNext,
+                .xEof = xEof,
                 .xColumn = null,
-                .xRowid = null,
+                .xRowid = xRowid,
                 .xUpdate = xUpdate,
                 .xBegin = xBegin,
                 .xSync = null,
@@ -378,13 +386,13 @@ pub fn VirtualTable(comptime Table: type) type {
                 .xBestIndex = xBestIndex,
                 .xDisconnect = xDisconnect,
                 .xDestroy = xDestroy,
-                .xOpen = null,
-                .xClose = null,
-                .xFilter = null,
-                .xNext = null,
-                .xEof = null,
+                .xOpen = xOpen,
+                .xClose = xClose,
+                .xFilter = xFilter,
+                .xNext = xNext,
+                .xEof = xEof,
                 .xColumn = null,
-                .xRowid = null,
+                .xRowid = xRowid,
                 .xUpdate = xUpdate,
                 .xBegin = xBegin,
                 .xSync = null,
@@ -542,21 +550,50 @@ pub fn VirtualTable(comptime Table: type) type {
             return c.SQLITE_OK;
         }
 
-        // fn xOpen(
-        //     vtab: [*c]c.sqlite3_vtab,
-        //     vtab_cursor: [*c][*c]c.sqlite3_vtab_cursor,
-        // ) callconv(.C) c_int {
-        // }
+        fn xOpen(
+            vtab: [*c]c.sqlite3_vtab,
+            vtab_cursor: [*c][*c]c.sqlite3_vtab_cursor,
+        ) callconv(.C) c_int {
+            const state = @fieldParentPtr(State, "vtab", vtab);
 
-        // fn xClose(vtab_cursor: [*c]c.sqlite3_vtab_cursor) callconv(.C) c_int {
-        //     const cursor_state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
-        //     cursor_state.deinit();
+            var cursor_state = state.allocator.create(CursorState) catch {
+                std.log.err("out of memory", .{});
+                return c.SQLITE_ERROR;
+            };
+            errdefer state.allocator.destroy(cursor_state);
 
-        //     return c.SQLITE_OK;
-        // }
+            cursor_state.* = .{
+                .vtab_cursor = mem.zeroes(c.sqlite3_vtab_cursor),
+                .allocator = state.allocator,
+                .cursor = state.table.open() catch |e| {
+                    std.log.err("error creating cursor: {any}", .{e});
+                    return c.SQLITE_ERROR;
+                },
+            };
 
-        // fn xEof(vtab_cursor: [*c]c.sqlite3_vtab_cursor) callconv(.C) c_int {
-        // }
+            vtab_cursor.* = @ptrCast(cursor_state);
+
+            return c.SQLITE_OK;
+        }
+
+        fn xFilter(
+            vtab_cursor: [*c]c.sqlite3_vtab_cursor,
+            idx_num: c_int,
+            idx_str: [*c]const u8,
+            argc: c_int,
+            argv: [*c]?*c.sqlite3_value,
+        ) callconv(.C) c_int {
+            _ = idx_num;
+            _ = idx_str;
+            _ = argc;
+            _ = argv;
+            const state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
+            state.cursor.begin() catch |e| {
+                std.log.err("error calling begin (xFilter) on cursor: {any}", .{e});
+                return c.SQLITE_ERROR;
+            };
+            return c.SQLITE_OK;
+        }
 
         // const FilterArgsFromCPointerError = error{} || mem.Allocator.Error;
 
@@ -567,17 +604,19 @@ pub fn VirtualTable(comptime Table: type) type {
         // ) FilterArgsFromCPointerError![]FilterArg {
         // }
 
-        // fn xFilter(
-        //     vtab_cursor: [*c]c.sqlite3_vtab_cursor,
-        //     idx_num: c_int,
-        //     idx_str: [*c]const u8,
-        //     argc: c_int,
-        //     argv: [*c]?*c.sqlite3_value,
-        // ) callconv(.C) c_int {
-        // }
+        fn xEof(vtab_cursor: [*c]c.sqlite3_vtab_cursor) callconv(.C) c_int {
+            const state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
+            return @intFromBool(state.cursor.eof);
+        }
 
-        // fn xNext(vtab_cursor: [*c]c.sqlite3_vtab_cursor) callconv(.C) c_int {
-        // }
+        fn xNext(vtab_cursor: [*c]c.sqlite3_vtab_cursor) callconv(.C) c_int {
+            const state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
+            state.cursor.next() catch |e| {
+                std.log.err("error calling next on cursor: {any}", .{e});
+                return c.SQLITE_ERROR;
+            };
+            return c.SQLITE_OK;
+        }
 
         // fn xColumn(
         //     vtab_cursor: [*c]c.sqlite3_vtab_cursor,
@@ -586,32 +625,45 @@ pub fn VirtualTable(comptime Table: type) type {
         // ) callconv(.C) c_int {
         // }
 
-        // fn xRowid(
-        //     vtab_cursor: [*c]c.sqlite3_vtab_cursor,
-        //     row_id_ptr: [*c]c.sqlite3_int64,
-        // ) callconv(.C) c_int {
-        // }
+        fn xRowid(
+            vtab_cursor: [*c]c.sqlite3_vtab_cursor,
+            rowid_ptr: [*c]c.sqlite3_int64,
+        ) callconv(.C) c_int {
+            const state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
+            rowid_ptr.* = state.cursor.rowid() catch |e| {
+                std.log.err("error calling rowid on cursor: {any}", .{e});
+                return c.SQLITE_ERROR;
+            };
+            return c.SQLITE_OK;
+        }
+
+        fn xClose(vtab_cursor: [*c]c.sqlite3_vtab_cursor) callconv(.C) c_int {
+            var cursor_state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
+            cursor_state.cursor.deinit();
+            cursor_state.allocator.destroy(cursor_state);
+            return c.SQLITE_OK;
+        }
 
         fn xBegin(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
-            return callTableCallback(Table.begin, .{}, vtab);
+            return callTableCallback("begin", Table.begin, .{}, vtab);
         }
 
         fn xCommit(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
-            return callTableCallback(Table.commit, .{}, vtab);
+            return callTableCallback("commit", Table.commit, .{}, vtab);
         }
 
         fn xRollback(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
-            return callTableCallback(Table.rollback, .{}, vtab);
+            return callTableCallback("rollback", Table.rollback, .{}, vtab);
         }
 
         fn xSavepoint(vtab: [*c]c.sqlite3_vtab, savepoint_id: c_int) callconv(.C) c_int {
             const sid: i32 = @intCast(savepoint_id);
-            return callTableCallback(Table.savepoint, .{sid}, vtab);
+            return callTableCallback("savepoint", Table.savepoint, .{sid}, vtab);
         }
 
         fn xRelease(vtab: [*c]c.sqlite3_vtab, savepoint_id: c_int) callconv(.C) c_int {
             const sid: i32 = @intCast(savepoint_id);
-            return callTableCallback(Table.release, .{sid}, vtab);
+            return callTableCallback("release", Table.release, .{sid}, vtab);
         }
 
         fn xRollbackTo(
@@ -619,10 +671,11 @@ pub fn VirtualTable(comptime Table: type) type {
             savepoint_id: c_int,
         ) callconv(.C) c_int {
             const sid: i32 = @intCast(savepoint_id);
-            return callTableCallback(Table.rollbackTo, .{sid}, vtab);
+            return callTableCallback("rollbackTo", Table.rollbackTo, .{sid}, vtab);
         }
 
         fn callTableCallback(
+            comptime functionName: []const u8,
             comptime function: anytype,
             args: anytype,
             vtab: [*c]c.sqlite3_vtab,
@@ -631,7 +684,7 @@ pub fn VirtualTable(comptime Table: type) type {
             const full_args = .{state.table} ++ args;
 
             @call(.auto, function, full_args) catch |e| {
-                std.log.err("error calling savepoint on table: {any}", .{e});
+                std.log.err("error calling {s} on table: {any}", .{functionName, e});
                 return c.SQLITE_ERROR;
             };
 
