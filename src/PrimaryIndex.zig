@@ -518,7 +518,7 @@ pub const Cursor = struct {
     }
 
     pub fn readColumnValue(self: @This(), idx: usize) ValueRef {
-        return self.stmt.readSqliteValue(idx);
+        return ValueRef{ .value = self.stmt.readSqliteValue(idx + 4) };
     }
 };
 

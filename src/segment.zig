@@ -375,6 +375,7 @@ pub const Reader = struct {
     const Self = @This();
 
     handle: Handle,
+    data_type: ColumnType.DataType,
     present: ?StripeReader(stripe.Bool.Decoder),
     length: ?StripeReader(stripe.Int.Decoder),
     primary: ?StripeReader(PrimaryDecoder),
@@ -426,6 +427,7 @@ pub const Reader = struct {
 
         return .{
             .handle = handle,
+            .data_type = data_type,
             .present = present,
             .length = length,
             .primary = primary,
@@ -463,7 +465,7 @@ pub const Reader = struct {
             }
         }
 
-        return .{ .primary = primary };
+        return .{ .data_type = self.data_type, .primary = primary };
     }
 
     /// Panics if the value being read requires allocation
@@ -483,7 +485,7 @@ pub const Reader = struct {
             }
         }
 
-        return .{ .primary = primary };
+        return .{ .data_type = self.data_type, .primary = primary };
     }
 
     pub fn skip(self: *Self) !void {
@@ -506,6 +508,7 @@ pub const Reader = struct {
     }
 };
 
+// TODO remove enum and use data_type from reader
 const PrimaryDecoder = union(enum) {
     const Self = @This();
 
@@ -592,6 +595,7 @@ const PrimaryValue = union {
 pub const Value = struct {
     const Self = @This();
 
+    data_type: ColumnType.DataType,
     primary: ?PrimaryValue,
 
     pub fn isNull(self: Self) bool {

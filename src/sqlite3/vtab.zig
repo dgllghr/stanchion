@@ -13,6 +13,7 @@ const versionGreaterThanOrEqualTo = @import("c.zig").versionGreaterThanOrEqualTo
 
 const ChangeSet = @import("ChangeSet.zig");
 const Conn = @import("Conn.zig");
+const ValueRef = @import("value.zig").Ref;
 
 /// CallbackContext is only valid for the duration of a callback from sqlite into the
 /// virtual table instance. It should no tbe saved between calls, and it is provided to
@@ -298,6 +299,64 @@ fn parseModuleArguments(
     return res;
 }
 
+pub const Result = struct {
+    const Self = @This();
+
+    ctx: ?*c.sqlite3_context,
+
+    pub fn setNull(self: Self) void {
+        c.sqlite3_result_null(self.ctx);
+    }
+
+    pub fn setBool(self: Self, value: bool) void {
+        c.sqlite3_result_int(self.ctx, @intFromBool(value));
+    }
+
+    pub fn setI64(self: Self, value: i64) void {
+        c.sqlite3_result_int64(self.ctx, value);
+    }
+
+    pub fn setI32(self: Self, value: i32) void {
+        c.sqlite3_result_int(self.ctx, value);
+    }
+
+    pub fn setF64(self: Self, value: f64) void {
+        c.sqlite3_result_double(self.ctx, value);
+    }
+
+    pub fn setBlob(self: Self, value: []const u8) void {
+        // Use the wrapper because of https://github.com/ziglang/zig/issues/15893
+        c.sqlite3_result_blob_transient(
+            self.ctx,
+            value.ptr,
+            @intCast(value.len),
+        );
+    }
+
+    pub fn setText(self: Self, value: []const u8) void {
+        // Use the wrapper because of https://github.com/ziglang/zig/issues/15893
+        c.sqlite3_result_text_transient(
+            self.ctx,
+            value.ptr,
+            @intCast(value.len),
+        );
+    }
+
+    pub fn setValue(self: Self, value: anytype) void {
+        switch (value.valueType()) {
+            .Null => self.setNull(),
+            .Integer => self.setI64(value.asI64()),
+            .Float => self.setF64(value.asF64()),
+            .Text => self.setTextTransient(value.asText()),
+            .Blob => self.setBlobTransient(value.asBlob()),
+        }
+    }
+
+    pub fn setSqliteValue(self: Self, value: ValueRef) void {
+        c.sqlite3_result_value(self.ctx, value.value);
+    }
+};
+
 /// Wrapper to create a sqlite virtual table from a zig struct that has the virtual
 /// table callbacks. This makes defining a virtual table in zig more zig-like by handling
 /// some of the memory layout and converts raw sqlite types to the corresponding zig
@@ -364,7 +423,7 @@ pub fn VirtualTable(comptime Table: type) type {
                 .xFilter = xFilter,
                 .xNext = xNext,
                 .xEof = xEof,
-                .xColumn = null,
+                .xColumn = xColumn,
                 .xRowid = xRowid,
                 .xUpdate = xUpdate,
                 .xBegin = xBegin,
@@ -391,7 +450,7 @@ pub fn VirtualTable(comptime Table: type) type {
                 .xFilter = xFilter,
                 .xNext = xNext,
                 .xEof = xEof,
-                .xColumn = null,
+                .xColumn = xColumn,
                 .xRowid = xRowid,
                 .xUpdate = xUpdate,
                 .xBegin = xBegin,
@@ -618,12 +677,19 @@ pub fn VirtualTable(comptime Table: type) type {
             return c.SQLITE_OK;
         }
 
-        // fn xColumn(
-        //     vtab_cursor: [*c]c.sqlite3_vtab_cursor,
-        //     ctx: ?*c.sqlite3_context,
-        //     n: c_int,
-        // ) callconv(.C) c_int {
-        // }
+        fn xColumn(
+            vtab_cursor: [*c]c.sqlite3_vtab_cursor,
+            ctx: ?*c.sqlite3_context,
+            n: c_int,
+        ) callconv(.C) c_int {
+            const state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
+            const result = Result { .ctx = ctx };
+            state.cursor.column(result, @intCast(n)) catch |e| {
+                std.log.err("error calling rowid on cursor: {any}", .{e});
+                return c.SQLITE_ERROR;
+            };
+            return c.SQLITE_OK;
+        }
 
         fn xRowid(
             vtab_cursor: [*c]c.sqlite3_vtab_cursor,
@@ -684,7 +750,7 @@ pub fn VirtualTable(comptime Table: type) type {
             const full_args = .{state.table} ++ args;
 
             @call(.auto, function, full_args) catch |e| {
-                std.log.err("error calling {s} on table: {any}", .{functionName, e});
+                std.log.err("error calling {s} on table: {any}", .{ functionName, e });
                 return c.SQLITE_ERROR;
             };
 

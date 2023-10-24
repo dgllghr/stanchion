@@ -9,6 +9,7 @@ const Conn = @import("sqlite3/Conn.zig");
 const Stmt = @import("sqlite3/Stmt.zig");
 const vtab = @import("sqlite3/vtab.zig");
 const sqlite_c = @import("sqlite3/c.zig").c;
+const Result = vtab.Result;
 
 const StmtCell = @import("StmtCell.zig");
 
@@ -404,6 +405,28 @@ pub const Cursor = struct {
             return self.rg_cursor.readRowid();
         }
         return self.pidx_cursor.readRowid();
+    }
+
+    pub fn column(self: *Cursor, result: Result, col_idx: usize) !void {
+        // TODO make this more efficient by passing the result into the cursors
+        if (self.in_row_group) {
+            const value = try self.rg_cursor.read(col_idx);
+            if (value.isNull()) {
+                result.setNull();
+                return;
+            }
+            switch (value.data_type) {
+                .Boolean => result.setBool(value.asBool()),
+                .Integer => result.setI64(value.asI64()),
+                .Float => @panic("todo"),
+                .Blob => result.setBlob(value.asBlob()),
+                .Text => result.setText(value.asText()),
+            }
+            return;
+        }
+
+        const value = self.pidx_cursor.readColumnValue(col_idx);
+        result.setSqliteValue(value);
     }
 };
 
