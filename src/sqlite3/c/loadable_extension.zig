@@ -1,5 +1,6 @@
 const c = @cImport({
     @cInclude("loadable-ext-sqlite3ext.h");
+    @cInclude("result-transient-ext.h");
 });
 
 pub usingnamespace c;
@@ -806,4 +807,15 @@ pub export fn sqlite3_serialize(db: ?*c.sqlite3, zSchema: [*c]const u8, piSize: 
 }
 pub export fn sqlite3_db_name(db: ?*c.sqlite3, N: c_int) [*c]const u8 {
     return sqlite3_api.*.db_name.?(db, N);
+}
+
+// TODO remove all of the following when issue is resolved:
+//      https://github.com/ziglang/zig/issues/15893
+
+pub export fn sqlite3_result_blob_transient(pCtx: ?*c.sqlite3_context, z: ?*const anyopaque, n: c_int) void {
+    return c.sqlite3_result_blob_transient_wrapper(sqlite3_api, pCtx, z, n);
+}
+
+pub export fn sqlite3_result_text_transient(pCtx: ?*c.sqlite3_context, z: ?*const anyopaque, n: c_int) void {
+    return c.sqlite3_result_text_transient_wrapper(sqlite3_api, pCtx, z, n);
 }

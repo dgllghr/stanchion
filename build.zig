@@ -27,6 +27,12 @@ pub fn build(b: *std.Build) void {
         .file = .{ .path = "src/sqlite3/c/sqlite3.c" },
         .flags = &[_][]const u8{"-std=c99"},
     });
+    // TODO remove when issue is resolved:
+    //      https://github.com/ziglang/zig/issues/15893
+    lib.addCSourceFile(.{
+        .file = .{ .path = "src/sqlite3/c/result-transient.c" },
+        .flags = &[_][]const u8{"-std=c99"},
+    });
     lib.addIncludePath(.{ .path = "src/sqlite3/c" });
     lib.linkLibC();
     const lib_options = b.addOptions();
@@ -47,6 +53,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     loadable_ext.force_pic = true;
+    // TODO remove when issue is resolved:
+    //      https://github.com/ziglang/zig/issues/15893
+    lib.addCSourceFile(.{
+        .file = .{ .path = "src/sqlite3/c/result-transient-ext.c" },
+        .flags = &[_][]const u8{"-std=c99"},
+    });
     loadable_ext.addIncludePath(.{ .path = "src/sqlite3/c" });
     // TODO add anonymous module?
     //      https://github.com/vrischmann/zig-sqlite/blob/193240aa5ecc9c9b14b25dec662505d5cf9f5340/build.zig#L350

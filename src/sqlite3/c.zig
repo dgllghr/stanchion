@@ -5,6 +5,9 @@ pub const c = if (build_options.loadable_extension)
 else
     @cImport({
         @cInclude("sqlite3.h");
+        // TODO remove when issue is resolved:
+        //      https://github.com/ziglang/zig/issues/15893
+        @cInclude("result-transient.h");
     });
 
 /// versionGreaterThanOrEqualTo returns true if the SQLite version is >= to the
