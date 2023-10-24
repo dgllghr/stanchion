@@ -55,14 +55,13 @@ pub fn build(b: *std.Build) void {
     loadable_ext.force_pic = true;
     // TODO remove when issue is resolved:
     //      https://github.com/ziglang/zig/issues/15893
-    lib.addCSourceFile(.{
+    loadable_ext.addCSourceFile(.{
         .file = .{ .path = "src/sqlite3/c/result-transient-ext.c" },
         .flags = &[_][]const u8{"-std=c99"},
     });
     loadable_ext.addIncludePath(.{ .path = "src/sqlite3/c" });
     // TODO add anonymous module?
     //      https://github.com/vrischmann/zig-sqlite/blob/193240aa5ecc9c9b14b25dec662505d5cf9f5340/build.zig#L350
-    loadable_ext.linkLibrary(lib);
     const loadable_ext_options = b.addOptions();
     loadable_ext.addOptions("build_options", loadable_ext_options);
     loadable_ext_options.addOption(bool, "loadable_extension", true);
