@@ -67,3 +67,4 @@ pub const Valid = validator.Valid;
 pub const Bool = @import("stripe/logical_type/Bool.zig");
 pub const Byte = @import("stripe/logical_type/Byte.zig");
 pub const Int = @import("stripe/logical_type/Int.zig");
+pub const Float = @import("stripe/logical_type/Float.zig");

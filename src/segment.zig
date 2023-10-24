@@ -35,6 +35,7 @@ pub const Planner = struct {
         Bool: stripe.Bool.Validator,
         Byte: stripe.Byte.Validator,
         Int: stripe.Int.Validator,
+        Float: stripe.Float.Validator,
 
         fn unused(self: PrimaryValidator) bool {
             return switch (self) {
@@ -49,11 +50,11 @@ pub const Planner = struct {
         switch (column_type.data_type) {
             .Boolean => primary = .{ .Bool = stripe.Bool.Validator.init() },
             .Integer => primary = .{ .Int = stripe.Int.Validator.init() },
+            .Float => primary = .{ .Float = stripe.Float.Validator.init() },
             .Blob, .Text => {
                 length = stripe.Int.Validator.init();
                 primary = .{ .Byte = stripe.Byte.Validator.init() };
             },
-            else => @panic("todo"),
         }
         return .{
             .column_type = column_type,
@@ -73,6 +74,7 @@ pub const Planner = struct {
         switch (self.column_type.data_type) {
             .Boolean => self.primary.Bool.next(value.asBool()),
             .Integer => self.primary.Int.next(value.asI64()),
+            .Float => self.primary.Float.next(value.asF64()),
             .Text => {
                 const text = value.asText();
                 self.length.?.next(@as(i64, @intCast(text.len)));
@@ -87,7 +89,6 @@ pub const Planner = struct {
                     self.primary.Byte.next(b);
                 }
             },
-            else => @panic("todo"),
         }
     }
 
@@ -268,6 +269,7 @@ pub const Writer = struct {
             switch (primary.encoder) {
                 .Bool => |*e| try e.encode(&primary.blob, value.asBool()),
                 .Int => |*e| try e.encode(&primary.blob, value.asI64()),
+                .Float => |*e| try e.encode(&primary.blob, value.asF64()),
                 .Byte => |*byte_encoder| {
                     const bytes =
                         if (value_type == .Text) value.asText() else value.asBlob();
@@ -306,6 +308,7 @@ const PrimaryEncoder = union(enum) {
     Bool: stripe.Bool.Encoder,
     Byte: stripe.Byte.Encoder,
     Int: stripe.Int.Encoder,
+    Float: stripe.Float.Encoder,
 };
 
 test "segment planner" {
@@ -452,6 +455,7 @@ pub const Reader = struct {
             switch (prim_stripe.decoder) {
                 .Bool => |*d| primary = .{ .bool = try d.decode(prim_stripe.blob) },
                 .Int => |*d| primary = .{ .int = try d.decode(prim_stripe.blob) },
+                .Float => |*d| primary = .{ .float = try d.decode(prim_stripe.blob) },
                 .Byte => |*d| {
                     var len_stripe = &self.length.?;
                     const length = try len_stripe.decoder.decode(len_stripe.blob);
@@ -481,6 +485,7 @@ pub const Reader = struct {
             switch (prim_stripe.decoder) {
                 .Bool => |*d| primary = .{ .bool = try d.decode(prim_stripe.blob) },
                 .Int => |*d| primary = .{ .int = try d.decode(prim_stripe.blob) },
+                .Float => |*d| primary = .{ .float = try d.decode(prim_stripe.blob) },
                 .Byte => @panic("allocation required to read value"),
             }
         }
@@ -515,12 +520,13 @@ const PrimaryDecoder = union(enum) {
     Bool: stripe.Bool.Decoder,
     Byte: stripe.Byte.Decoder,
     Int: stripe.Int.Decoder,
+    Float: stripe.Float.Decoder,
 
     fn init(data_type: ColumnType.DataType, encoding: stripe.Encoding) !Self {
         return switch (data_type) {
             .Boolean => .{ .Bool = try stripe.Bool.Decoder.init(encoding) },
             .Integer => .{ .Int = try stripe.Int.Decoder.init(encoding) },
-            .Float => @panic("todo"),
+            .Float => .{ .Float = try stripe.Float.Decoder.init(encoding) },
             .Text, .Blob => .{ .Byte = try stripe.Byte.Decoder.init(encoding) },
         };
     }
@@ -589,6 +595,7 @@ test "segment reader" {
 const PrimaryValue = union {
     bool: bool,
     int: i64,
+    float: f64,
     bytes: []const u8,
 };
 
@@ -615,8 +622,7 @@ pub const Value = struct {
     }
 
     pub fn asF64(self: Self) f64 {
-        _ = self;
-        @panic("todo");
+        return self.primary.?.float;
     }
 
     pub fn asBlob(self: Self) []const u8 {

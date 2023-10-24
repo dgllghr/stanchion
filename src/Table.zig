@@ -418,7 +418,7 @@ pub const Cursor = struct {
             switch (value.data_type) {
                 .Boolean => result.setBool(value.asBool()),
                 .Integer => result.setI64(value.asI64()),
-                .Float => @panic("todo"),
+                .Float => result.setF64(value.asF64()),
                 .Blob => result.setBlob(value.asBlob()),
                 .Text => result.setText(value.asText()),
             }
