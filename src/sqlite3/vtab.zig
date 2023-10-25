@@ -665,7 +665,7 @@ pub fn VirtualTable(comptime Table: type) type {
 
         fn xEof(vtab_cursor: [*c]c.sqlite3_vtab_cursor) callconv(.C) c_int {
             const state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
-            return @intFromBool(state.cursor.eof);
+            return @intFromBool(state.cursor.eof());
         }
 
         fn xNext(vtab_cursor: [*c]c.sqlite3_vtab_cursor) callconv(.C) c_int {

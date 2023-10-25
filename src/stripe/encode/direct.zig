@@ -6,47 +6,6 @@ const Valid = @import("../validator.zig").Valid;
 
 const direct = @This();
 
-pub fn Decoder(
-    comptime Value: type,
-    comptime fromBytes: fn (*const [@sizeOf(Value)]u8) Value,
-) type {
-    return struct {
-        const Self = @This();
-
-        index: usize,
-
-        pub fn init() Self {
-            return .{ .index = 0 };
-        }
-
-        pub fn begin(_: *Self, _: anytype) !void {}
-
-        pub fn decode(self: *Self, blob: anytype) !Value {
-            var buf: [@sizeOf(Value)]u8 = undefined;
-            try blob.readAt(buf[0..], self.index * @sizeOf(Value));
-            self.index += 1;
-            return fromBytes(&buf);
-        }
-
-        pub fn decodeAll(self: *Self, blob: anytype, dst: []Value) !void {
-            if (@sizeOf(Value) == 1) {
-                try blob.readAt(dst, self.index);
-                self.index += dst.len;
-                return;
-            }
-
-            // TODO this could be made more efficient
-            for (dst) |*cell| {
-                cell.* = try self.decode(blob);
-            }
-        }
-
-        pub fn skip(self: *Self, n: u32) void {
-            self.index += n;
-        }
-    };
-}
-
 pub fn Validator(
     comptime Value: type,
     comptime toBytes: fn (Value) [@sizeOf(Value)]u8,
@@ -99,13 +58,58 @@ pub fn Encoder(
             return true;
         }
 
-        pub fn encode(self: *Self, blob: anytype, value: Value) !void {
+        pub fn write(self: *Self, blob: anytype, value: Value) !void {
             const buf = toBytes(value);
             try blob.writeAt(buf[0..], self.count * @sizeOf(V));
             self.count += 1;
         }
 
         pub fn end(_: *Self, _: anytype) !void {}
+    };
+}
+
+pub fn Decoder(
+    comptime Value: type,
+    comptime fromBytes: fn (*const [@sizeOf(Value)]u8) Value,
+) type {
+    return struct {
+        const Self = @This();
+
+        index: usize,
+
+        pub fn init() Self {
+            return .{ .index = 0 };
+        }
+
+        pub fn begin(_: *Self, _: anytype) !void {}
+
+        pub fn next(self: *Self, n: u32) void {
+            self.index += n;
+        }
+
+        pub fn read(self: *Self, blob: anytype) !Value {
+            var buf: [@sizeOf(Value)]u8 = undefined;
+            try blob.readAt(buf[0..], self.index * @sizeOf(Value));
+            return fromBytes(&buf);
+        }
+
+        pub fn readAll(self: *Self, dst: []Value, blob: anytype) !void {
+            if (@sizeOf(Value) == 1) {
+                try blob.readAt(dst, self.index);
+                return;
+            }
+
+            // TODO more testing needed
+            var bytes_dest: []u8 = undefined;
+            bytes_dest.len = dst.len * @sizeOf(Value);
+            bytes_dest.ptr = @ptrCast(dst.ptr);
+            try blob.readAt(bytes_dest[0..], self.index * @sizeOf(Value));
+            for (dst, 0..) |*v, idx| {
+                const start = idx * @sizeOf(Value);
+                v.* = fromBytes(@as(*const [@sizeOf(Value)]u8,
+                    @ptrCast(bytes_dest[start..(start + @sizeOf(Value))])));
+            }
+        }
     };
 }
 
@@ -131,14 +135,19 @@ test "decoder" {
     try decoder.begin(blob);
 
     for (expected_values) |v| {
-        var value = try decoder.decode(blob);
+        var value = try decoder.read(blob);
         try std.testing.expectEqual(v, value);
+        decoder.next(1);
     }
 
     decoder = Decoder(u32, readU32).init();
     try decoder.begin(blob);
     var dst: [3]u32 = undefined;
-    try decoder.decodeAll(blob, &dst);
+    try decoder.readAll(&dst, blob);
+
+    for (expected_values, dst) |exp, v| {
+        try std.testing.expectEqual(exp, v);
+    }
 }
 
 fn readU32(buf: *const [4]u8) u32 {

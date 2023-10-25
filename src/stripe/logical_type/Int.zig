@@ -14,6 +14,44 @@ const Tag = enum {
     direct,
 };
 
+pub const Validator = Optimizer(struct {
+    constant: constant.Validator(i64, writeDirect),
+    direct: direct.Validator(i64, writeDirect),
+}, Encoder);
+
+pub const Encoder = union(Tag) {
+    const Self = @This();
+
+    constant: constant.Encoder(i64, writeDirect),
+    direct: direct.Encoder(i64, writeDirect),
+
+    pub const Value = i64;
+
+    pub fn deinit(self: *Self) void {
+        switch (self) {
+            inline else => |*e| e.deinit(),
+        }
+    }
+
+    pub fn begin(self: *Self, blob: anytype) !bool {
+        switch (self.*) {
+            inline else => |*e| return e.begin(blob),
+        }
+    }
+
+    pub fn write(self: *Self, blob: anytype, value: Value) !void {
+        switch (self.*) {
+            inline else => |*e| try e.write(blob, value),
+        }
+    }
+
+    pub fn end(self: *Self, blob: anytype) !void {
+        switch (self.*) {
+            inline else => |*e| try e.end(blob),
+        }
+    }
+};
+
 pub const Decoder = union(Tag) {
     const Self = @This();
 
@@ -38,59 +76,21 @@ pub const Decoder = union(Tag) {
         }
     }
 
-    pub fn decode(self: *Self, blob: anytype) !i64 {
+    pub fn next(self: *Self, n: u32) void {
         switch (self.*) {
-            inline else => |*d| return d.decode(blob),
+            inline else => |*d| d.next(n),
         }
     }
 
-    pub fn decodeAll(self: *Self, blob: anytype, dst: []i64) !void {
+    pub fn read(self: *Self, blob: anytype) !i64 {
         switch (self.*) {
-            inline else => |*d| try d.decodeAll(blob, dst),
+            inline else => |*d| return d.read(blob),
         }
     }
 
-    pub fn skip(self: *Self, n: u32) void {
+    pub fn readAll(self: *Self, dst: []i64, blob: anytype) !void {
         switch (self.*) {
-            inline else => |*d| d.skip(n),
-        }
-    }
-};
-
-pub const Validator = Optimizer(struct {
-    constant: constant.Validator(i64, writeDirect),
-    direct: direct.Validator(i64, writeDirect),
-}, Encoder);
-
-pub const Encoder = union(Tag) {
-    const Self = @This();
-
-    constant: constant.Encoder(i64, writeDirect),
-    direct: direct.Encoder(i64, writeDirect),
-
-    pub const Value = i64;
-
-    pub fn deinit(self: *Self) void {
-        switch (self) {
-            inline else => |e| e.deinit(),
-        }
-    }
-
-    pub fn begin(self: *Self, blob: anytype) !bool {
-        switch (self.*) {
-            inline else => |*e| return e.begin(blob),
-        }
-    }
-
-    pub fn encode(self: *Self, blob: anytype, value: Value) !void {
-        switch (self.*) {
-            inline else => |*e| try e.encode(blob, value),
-        }
-    }
-
-    pub fn end(self: *Self, blob: anytype) !void {
-        switch (self.*) {
-            inline else => |*e| try e.end(blob),
+            inline else => |*d| try d.readAll(dst, blob),
         }
     }
 };

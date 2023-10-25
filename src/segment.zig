@@ -36,12 +36,6 @@ pub const Planner = struct {
         Byte: stripe.Byte.Validator,
         Int: stripe.Int.Validator,
         Float: stripe.Float.Validator,
-
-        fn unused(self: PrimaryValidator) bool {
-            return switch (self) {
-                inline else => |v| v.unused(),
-            };
-        }
     };
 
     pub fn init(column_type: ColumnType) Self {
@@ -257,29 +251,29 @@ pub const Writer = struct {
         const value_type = value.valueType();
 
         if (value_type == .Null) {
-            try self.present.?.encoder.encode(&self.present.?.blob, false);
+            try self.present.?.encoder.write(&self.present.?.blob, false);
             return;
         }
 
         if (self.present) |*present| {
-            try present.encoder.encode(present.blob, true);
+            try present.encoder.write(present.blob, true);
         }
 
         if (self.primary) |*primary| {
             switch (primary.encoder) {
-                .Bool => |*e| try e.encode(&primary.blob, value.asBool()),
-                .Int => |*e| try e.encode(&primary.blob, value.asI64()),
-                .Float => |*e| try e.encode(&primary.blob, value.asF64()),
+                .Bool => |*e| try e.write(&primary.blob, value.asBool()),
+                .Int => |*e| try e.write(&primary.blob, value.asI64()),
+                .Float => |*e| try e.write(&primary.blob, value.asF64()),
                 .Byte => |*byte_encoder| {
                     const bytes =
                         if (value_type == .Text) value.asText() else value.asBlob();
                     var length = &self.length.?;
-                    try length.encoder.encode(
+                    try length.encoder.write(
                         &length.blob,
                         @as(i64, @intCast(bytes.len)),
                     );
                     for (bytes) |b| {
-                        try byte_encoder.encode(&primary.blob, b);
+                        try byte_encoder.write(&primary.blob, b);
                     }
                 },
             }
@@ -437,6 +431,27 @@ pub const Reader = struct {
         };
     }
 
+    pub fn next(self: *Self) !void {
+        var present = true;
+        if (self.present) |*pres_stripe| {
+            present = try pres_stripe.decoder.read(pres_stripe.blob);
+            pres_stripe.decoder.next(1);
+        }
+
+        if (present) {
+            const prim_stripe = &self.primary.?;
+            switch (prim_stripe.decoder) {
+                .Byte => |*d| {
+                    const len_stripe = &self.length.?;
+                    const length = try len_stripe.decoder.read(len_stripe.blob);
+                    len_stripe.decoder.next(1);
+                    d.next(@intCast(length));
+                },
+                inline else => |*d| d.next(1),
+            }
+        }
+    }
+
     /// The value will use the supplied buffer and allocator if necessary. The buffer
     /// must be managed by the caller.
     pub fn read(
@@ -446,23 +461,24 @@ pub const Reader = struct {
     ) !Value {
         var present = true;
         if (self.present) |*pres_stripe| {
-            present = try pres_stripe.decoder.decode(pres_stripe.blob);
+            present = try pres_stripe.decoder.read(pres_stripe.blob);
         }
 
         var primary: ?PrimaryValue = null;
         if (present) {
             const prim_stripe = &self.primary.?;
             switch (prim_stripe.decoder) {
-                .Bool => |*d| primary = .{ .bool = try d.decode(prim_stripe.blob) },
-                .Int => |*d| primary = .{ .int = try d.decode(prim_stripe.blob) },
-                .Float => |*d| primary = .{ .float = try d.decode(prim_stripe.blob) },
+                .Bool => |*d| primary = .{ .bool = try d.read(prim_stripe.blob) },
+                .Int => |*d| primary = .{ .int = try d.read(prim_stripe.blob) },
+                .Float => |*d| primary = .{ .float = try d.read(prim_stripe.blob) },
                 .Byte => |*d| {
                     var len_stripe = &self.length.?;
-                    const length = try len_stripe.decoder.decode(len_stripe.blob);
+                    const length = try len_stripe.decoder.read(len_stripe.blob);
+                    // TODO cache the length for use in `next`?
                     try bytes_buf.resize(allocator, @intCast(length));
-                    try d.decodeAll(
-                        prim_stripe.blob,
+                    try d.readAll(
                         bytes_buf.items,
+                        prim_stripe.blob,
                     );
                     primary = .{ .bytes = bytes_buf.items };
                 },
@@ -476,40 +492,21 @@ pub const Reader = struct {
     pub fn readNoAlloc(self: *Self) !Value {
         var present = true;
         if (self.present) |*pres_stripe| {
-            present = try pres_stripe.decoder.decode(pres_stripe.blob);
+            present = try pres_stripe.decoder.read(pres_stripe.blob);
         }
 
         var primary: ?PrimaryValue = null;
         if (present) {
             const prim_stripe = &self.primary.?;
             switch (prim_stripe.decoder) {
-                .Bool => |*d| primary = .{ .bool = try d.decode(prim_stripe.blob) },
-                .Int => |*d| primary = .{ .int = try d.decode(prim_stripe.blob) },
-                .Float => |*d| primary = .{ .float = try d.decode(prim_stripe.blob) },
+                .Bool => |*d| primary = .{ .bool = try d.read(prim_stripe.blob) },
+                .Int => |*d| primary = .{ .int = try d.read(prim_stripe.blob) },
+                .Float => |*d| primary = .{ .float = try d.read(prim_stripe.blob) },
                 .Byte => @panic("allocation required to read value"),
             }
         }
 
         return .{ .data_type = self.data_type, .primary = primary };
-    }
-
-    pub fn skip(self: *Self) !void {
-        var present = true;
-        if (self.present) |*pres_stripe| {
-            present = try pres_stripe.decoder.decode(pres_stripe.blob);
-        }
-
-        if (present) {
-            const prim_stripe = &self.primary.?;
-            switch (prim_stripe.decoder) {
-                .Byte => |*d| {
-                    const len_stripe = &self.length.?;
-                    const length = try len_stripe.decoder.decode(len_stripe.blob);
-                    d.skip(@intCast(length));
-                },
-                inline else => |*d| d.skip(1),
-            }
-        }
     }
 };
 
@@ -589,6 +586,7 @@ test "segment reader" {
     for (0..10) |idx| {
         const value = try reader.read(std.testing.allocator, &bytes_buf);
         try std.testing.expectEqual(idx, @intCast(value.asI64()));
+        try reader.next();
     }
 }
 

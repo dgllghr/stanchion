@@ -7,39 +7,6 @@ const Valid = @import("../validator.zig").Valid;
 
 const constant = @This();
 
-pub fn Decoder(
-    comptime Value: type,
-    comptime fromBytes: fn (*const [@sizeOf(Value)]u8) Value,
-) type {
-    return struct {
-        const Self = @This();
-
-        value: Value,
-
-        pub fn init() Self {
-            return .{ .value = undefined };
-        }
-
-        pub fn begin(self: *Self, blob: anytype) !void {
-            var buf: [@sizeOf(Value)]u8 = undefined;
-            try blob.readAt(buf[0..], 0);
-            self.value = fromBytes(&buf);
-        }
-
-        pub fn decode(self: *Self, _: anytype) !Value {
-            return self.value;
-        }
-
-        pub fn decodeAll(self: *Self, _: anytype, dst: []Value) !void {
-            for (dst) |*cell| {
-                cell.* = self.value;
-            }
-        }
-
-        pub fn skip(_: *Self, _: u32) void {}
-    };
-}
-
 pub fn Validator(
     comptime Value: type,
     comptime toBytes: fn (Value) [@sizeOf(Value)]u8,
@@ -49,7 +16,7 @@ pub fn Validator(
 
         state: State,
 
-        pub const Encoder = constant.Encoder;
+        pub const Encoder = constant.Encoder(Value, toBytes);
 
         const State = union(enum) {
             empty,
@@ -75,10 +42,10 @@ pub fn Validator(
             }
         }
 
-        pub fn end(self: Self) !Valid(Self.Encoder(Value, toBytes)) {
+        pub fn end(self: Self) !Valid(Self.Encoder) {
             switch (self.state) {
                 .valid => |value| {
-                    const encoder = Self.Encoder(Value, toBytes){ .value = value };
+                    const encoder = Self.Encoder.init(value);
                     return .{
                         .meta = .{
                             .byte_len = @sizeOf(Value),
@@ -104,7 +71,7 @@ pub fn Encoder(
 
         const Value = V;
 
-        pub fn init(value: Value) void {
+        pub fn init(value: Value) Self {
             return .{ .value = value };
         }
 
@@ -116,9 +83,42 @@ pub fn Encoder(
             return false;
         }
 
-        pub fn encode(_: *Self, _: anytype, _: Value) !void {}
+        pub fn write(_: *Self, _: anytype, _: Value) !void {}
 
         pub fn end(_: *Self, _: anytype) !void {}
+    };
+}
+
+pub fn Decoder(
+    comptime Value: type,
+    comptime fromBytes: fn (*const [@sizeOf(Value)]u8) Value,
+) type {
+    return struct {
+        const Self = @This();
+
+        value: Value,
+
+        pub fn init() Self {
+            return .{ .value = undefined };
+        }
+
+        pub fn begin(self: *Self, blob: anytype) !void {
+            var buf: [@sizeOf(Value)]u8 = undefined;
+            try blob.readAt(buf[0..], 0);
+            self.value = fromBytes(&buf);
+        }
+
+        pub fn next(_: *Self, _: u32) void {}
+
+        pub fn read(self: *Self, _: anytype) !Value {
+            return self.value;
+        }
+
+        pub fn readAll(self: *Self, dst: []Value, _: anytype) !void {
+            for (dst) |*cell| {
+                cell.* = self.value;
+            }
+        }
     };
 }
 
@@ -136,9 +136,10 @@ test "decoder" {
     var decoder = Decoder(u32, readU32).init();
     try decoder.begin(blob);
 
-    var value = try decoder.decode(blob);
+    var value = try decoder.read(blob);
     try std.testing.expectEqual(@as(u32, 29), value);
-    value = try decoder.decode(blob);
+    decoder.next(1);
+    value = try decoder.read(blob);
     try std.testing.expectEqual(@as(u32, 29), value);
 }
 

@@ -350,7 +350,6 @@ pub const Cursor = struct {
     pidx_cursor: PrimaryIndex.Cursor,
     rg_cursor: row_group.Cursor,
     in_row_group: bool,
-    eof: bool,
 
     pub fn init(
         allocator: Allocator,
@@ -365,7 +364,6 @@ pub const Cursor = struct {
             .pidx_cursor = pidx_cursor,
             .rg_cursor = rg_cursor,
             .in_row_group = false,
-            .eof = false,
         };
     }
 
@@ -378,17 +376,21 @@ pub const Cursor = struct {
         try self.next();
     }
 
+    pub fn eof(self: *Cursor) bool {
+        return self.pidx_cursor.eof;
+    }
+
     pub fn next(self: *Cursor) !void {
         if (self.in_row_group) {
-            const has_next = try self.rg_cursor.next();
-            if (has_next) {
+            try self.rg_cursor.next();
+            if (!self.rg_cursor.eof()) {
                 return;
             }
             self.in_row_group = false;
         }
 
-        const has_next = try self.pidx_cursor.next();
-        if (has_next) {
+        try self.pidx_cursor.next();
+        if (!self.pidx_cursor.eof) {
             if (self.pidx_cursor.entryType() == .RowGroup) {
                 self.rg_cursor.reset();
                 // Read the row group into the rg_cursor
@@ -397,7 +399,6 @@ pub const Cursor = struct {
             }
             return;
         }
-        self.eof = true;
     }
 
     pub fn rowid(self: *Cursor) !i64 {

@@ -12,6 +12,44 @@ const Tag = enum {
     constant,
 };
 
+pub const Validator = Optimizer(struct {
+    direct: direct.Validator(u8, writeDirect),
+    constant: constant.Validator(u8, writeDirect),
+}, Encoder);
+
+pub const Encoder = union(Tag) {
+    const Self = @This();
+
+    direct: direct.Encoder(u8, writeDirect),
+    constant: constant.Encoder(u8, writeDirect),
+
+    pub const Value = u8;
+
+    pub fn deinit(self: *Self) void {
+        switch (self) {
+            inline else => |*e| e.deinit(),
+        }
+    }
+
+    pub fn begin(self: *Self, blob: anytype) !bool {
+        switch (self.*) {
+            inline else => |*e| return e.begin(blob),
+        }
+    }
+
+    pub fn write(self: *Self, blob: anytype, value: Value) !void {
+        switch (self.*) {
+            inline else => |*e| try e.write(blob, value),
+        }
+    }
+
+    pub fn end(self: *Self, blob: anytype) !void {
+        switch (self.*) {
+            inline else => |*e| try e.end(blob),
+        }
+    }
+};
+
 pub const Decoder = union(Tag) {
     const Self = @This();
 
@@ -36,59 +74,21 @@ pub const Decoder = union(Tag) {
         }
     }
 
-    pub fn decode(self: *Self, blob: anytype) !u8 {
+    pub fn next(self: *Self, n: u32) void {
+        switch (self.*) {
+            inline else => |*d| d.next(n),
+        }
+    }
+
+    pub fn read(self: *Self, blob: anytype) !u8 {
         switch (self.*) {
             inline else => |*d| return d.decode(blob),
         }
     }
 
-    pub fn decodeAll(self: *Self, blob: anytype, dst: []u8) !void {
+    pub fn readAll(self: *Self, dst: []u8, blob: anytype) !void {
         switch (self.*) {
-            inline else => |*d| try d.decodeAll(blob, dst),
-        }
-    }
-
-    pub fn skip(self: *Self, n: u32) void {
-        switch (self.*) {
-            inline else => |*d| d.skip(n),
-        }
-    }
-};
-
-pub const Validator = Optimizer(struct {
-    direct: direct.Validator(u8, writeDirect),
-    constant: constant.Validator(u8, writeDirect),
-}, Encoder);
-
-pub const Encoder = union(Tag) {
-    const Self = @This();
-
-    direct: direct.Encoder(u8, writeDirect),
-    constant: constant.Encoder(u8, writeDirect),
-
-    pub const Value = u8;
-
-    pub fn deinit(self: *Self) void {
-        switch (self) {
-            inline else => |e| e.deinit(),
-        }
-    }
-
-    pub fn begin(self: *Self, blob: anytype) !bool {
-        switch (self.*) {
-            inline else => |*e| return e.begin(blob),
-        }
-    }
-
-    pub fn encode(self: *Self, blob: anytype, value: Value) !void {
-        switch (self.*) {
-            inline else => |*e| try e.encode(blob, value),
-        }
-    }
-
-    pub fn end(self: *Self, blob: anytype) !void {
-        switch (self.*) {
-            inline else => |*e| try e.end(blob),
+            inline else => |*d| try d.readAll(dst, blob),
         }
     }
 };

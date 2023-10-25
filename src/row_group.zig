@@ -157,11 +157,7 @@ pub const Cursor = struct {
     /// Allocator used to allocate memory for values
     value_buffer_allocator: Allocator,
     value_buffers: []ArrayListUnmanaged(u8),
-    row_rowid: ?i64,
-    row_values: []?SegmentValue,
 
-    /// Index is initialized to 0, but because `next` is called first to see if the
-    /// iterator has a next element, index is off by 1.
     index: u32,
 
     /// Initializes the row group cursor with an undefined row group. Set the row group
@@ -189,16 +185,10 @@ pub const Cursor = struct {
         for (segments) |*seg| {
             seg.* = null;
         }
-        var value_buffers = try arena.allocator().alloc(
-            ArrayListUnmanaged(u8),
-            col_len,
-        );
+        var value_buffers = try arena.allocator().alloc(ArrayListUnmanaged(u8), col_len);
         for (value_buffers) |*buf| {
             buf.* = ArrayListUnmanaged(u8){};
         }
-        // No need to initialize the row values to null because next is called first
-        // and that nulls out the row values
-        const row_values = try arena.allocator().alloc(?SegmentValue, col_len);
 
         return .{
             .static_allocator = arena,
@@ -209,21 +199,11 @@ pub const Cursor = struct {
             .segments = segments,
             .value_buffer_allocator = allocator,
             .value_buffers = value_buffers,
-            .row_rowid = null,
-            .row_values = row_values,
             .index = 0,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        // if (self.rowid_segment) |*s| {
-        //     s.deinit(self.value_buffer_allocator);
-        // }
-        // for (self.segments) |*seg| {
-        //     if (seg) |*s| {
-        //         s.deinit(self.value_buffer_allocator);
-        //     }
-        // }
         for (self.value_buffers) |*buf| {
             buf.deinit(self.value_buffer_allocator);
         }
@@ -235,100 +215,73 @@ pub const Cursor = struct {
     }
 
     pub fn reset(self: *Self) void {
-        self.index = 1;
+        self.index = 0;
 
         self.rowid_segment = null;
         for (self.segments) |*seg| {
-            // if (seg.*) |*s| {
-            //     s.deinit(self.value_buffer_allocator);
-            // }
             seg.* = null;
-        }
-
-        self.row_rowid = null;
-        for (self.row_values) |*v| {
-            v.* = null;
         }
     }
 
-    pub fn next(self: *Self) !bool {
-        if (self.row_rowid == null) {
-            if (self.rowid_segment) |*seg| {
-                try seg.skip();
-            }
+    pub fn eof(self: *Self) bool {
+        return self.index < self.row_group.record_count;
+    }
+
+    pub fn next(self: *Self) !void {
+        if (self.rowid_segment) |*seg| {
+            try seg.next();
         }
-        self.row_rowid = null;
-        for (self.row_values, 0..) |*v, idx| {
-            // Advance the segment reader for every loaded segment that was not read
-            // (does not have a cached value)
-            if (v.* == null) {
-                if (self.segments[idx]) |*seg| {
-                    try seg.skip();
-                }
+        for (self.segments) |*seg| {
+            if (seg.*) |*s| {
+                try s.next();
             }
-            v.* = null;
         }
         self.index += 1;
-        return self.index <= self.row_group.record_count;
     }
 
     pub fn readRowid(self: *Self) !i64 {
-        std.debug.assert(self.index > 0);
-
-        if (self.row_rowid) |rowid| {
-            return rowid;
-        }
-
         if (self.rowid_segment == null) {
             try self.loadRowidSegment();
         }
 
         var seg = &self.rowid_segment.?;
         const value = try seg.readNoAlloc();
-        self.row_rowid = value.asI64();
-        return self.row_rowid.?;
+        return value.asI64();
     }
 
     pub fn read(self: *Self, col_idx: usize) !SegmentValue {
-        std.debug.assert(self.index > 0);
-
-        if (self.row_values[col_idx]) |v| {
-            return v;
-        }
-
         if (self.segments[col_idx] == null) {
             try self.loadSegment(col_idx);
         }
 
         var seg = &self.segments[col_idx].?;
-        const value = try seg.read(self.value_buffer_allocator, &self.value_buffers[col_idx]);
-        self.row_values[col_idx] = value;
-        return value;
+        return seg.read(self.value_buffer_allocator, &self.value_buffers[col_idx]);
     }
 
     fn loadRowidSegment(self: *Self) !void {
-        var segment_reader = try SegmentReader.open(
+        var segment_reader = &self.rowid_segment;
+        segment_reader.* = try SegmentReader.open(
             self.segment_db,
             ColumnType.Rowid.data_type,
             self.row_group.rowid_segment_id,
         );
         for (1..self.index) |_| {
-            try segment_reader.skip();
+            try segment_reader.*.?.next();
         }
-        self.rowid_segment = segment_reader;
     }
 
     fn loadSegment(self: *Self, col_idx: usize) !void {
         const segment_id = self.row_group.column_segment_ids[col_idx];
-        var segment_reader = try SegmentReader.open(
+
+        var segment_reader = &self.segments[col_idx];
+        segment_reader.* = try SegmentReader.open(
             self.segment_db,
             self.column_types[col_idx].data_type,
             segment_id,
         );
         for (1..self.index) |_| {
-            try segment_reader.skip();
+            try segment_reader.*.?.next();
         }
-        self.segments[col_idx] = segment_reader;
     }
 };
 
@@ -402,7 +355,7 @@ test "row group: round trip" {
     try pidx.readRowGroupEntry(cursor.rowGroup(), row_group.sort_key, row_group.rowid);
 
     var idx: usize = 0;
-    while (try cursor.next()) {
+    while (!cursor.eof()) {
         const rowid = try cursor.readRowid();
         try std.testing.expectEqual(rowids[idx], rowid);
 
@@ -415,5 +368,6 @@ test "row group: round trip" {
         try std.testing.expectEqual(table_values[rowIdx][1].Integer, sector);
 
         idx += 1;
+        try cursor.next();
     }
 }

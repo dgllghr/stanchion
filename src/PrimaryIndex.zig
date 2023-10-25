@@ -491,13 +491,15 @@ pub fn deleteStagedInsertsRange(
 pub const Cursor = struct {
     stmt: Stmt,
     cell: *StmtCell,
+    eof: bool,
 
     pub fn deinit(self: *@This()) void {
         self.cell.reset();
     }
 
-    pub fn next(self: *@This()) !bool {
-        return self.stmt.next();
+    pub fn next(self: *@This()) !void {
+        const has_next = try self.stmt.next();
+        self.eof = !has_next;
     }
 
     pub fn entryType(self: @This()) EntryType {
@@ -523,9 +525,10 @@ pub const Cursor = struct {
 };
 
 pub fn cursor(self: *Self) !Cursor {
-    return Cursor {
+    return .{
         .stmt = try self.entries_iterator.getStmt(self.conn),
         .cell = &self.entries_iterator,
+        .eof = false,
     };
 }
 

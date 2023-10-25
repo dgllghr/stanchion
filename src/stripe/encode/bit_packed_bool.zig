@@ -14,61 +14,6 @@ comptime {
     }
 }
 
-pub const Decoder = struct {
-    const Self = @This();
-
-    index: usize,
-    current_word: ?Word,
-
-    pub fn init() Self {
-        return .{
-            .index = 0,
-            .current_word = null,
-        };
-    }
-
-    pub fn begin(_: *Self, _: anytype) !void {}
-
-    pub fn decode(self: *Self, blob: anytype) !bool {
-        if (self.current_word == null) {
-            const word_index = self.index / @bitSizeOf(Word);
-            try self.loadWord(blob, word_index);
-        }
-
-        const bit_index: u5 = @intCast(self.index % @bitSizeOf(Word));
-
-        self.index += 1;
-        if (@mod(self.index, @bitSizeOf(Word)) == 0) {
-            // Invalidate the current word
-            self.current_word = null;
-        }
-
-        return (self.current_word.? >> bit_index) & 1 > 0;
-    }
-
-    pub fn decodeAll(self: *Self, blob: anytype, dst: []bool) !void {
-        for (dst) |*cell| {
-            cell.* = try self.decode(blob);
-        }
-    }
-
-    pub fn skip(self: *Self, n: u32) void {
-        const prev_word_index = self.index / @bitSizeOf(Word);
-        self.index += n;
-        if (self.index / @bitSizeOf(Word) != prev_word_index) {
-            // Invalidate the current word
-            self.current_word = null;
-        }
-    }
-
-    fn loadWord(self: *Self, blob: anytype, word_index: usize) !void {
-        var buf: [@sizeOf(Word)]u8 = undefined;
-        const byte_index = word_index * @sizeOf(Word);
-        try blob.readAt(buf[0..], byte_index);
-        self.current_word = mem.readIntLittle(Word, &buf);
-    }
-};
-
 pub const Validator = struct {
     const Self = @This();
 
@@ -119,7 +64,7 @@ pub const Encoder = struct {
         return true;
     }
 
-    pub fn encode(self: *Self, blob: anytype, value: Value) !void {
+    pub fn write(self: *Self, blob: anytype, value: Value) !void {
         if (value) {
             self.word |= @as(Word, 1) << self.bit_index;
         }
@@ -143,6 +88,54 @@ pub const Encoder = struct {
     }
 };
 
+pub const Decoder = struct {
+    const Self = @This();
+
+    index: usize,
+    current_word: ?Word,
+
+    pub fn init() Self {
+        return .{
+            .index = 0,
+            .current_word = null,
+        };
+    }
+
+    pub fn begin(_: *Self, _: anytype) !void {
+        // TODO read the word bit width?
+    }
+
+    pub fn next(self: *Self, n: u32) void {
+        const prev_word_index = self.index / @bitSizeOf(Word);
+        self.index += n;
+        if (self.index / @bitSizeOf(Word) != prev_word_index) {
+            // Invalidate the current word
+            self.current_word = null;
+        }
+    }
+
+    pub fn read(self: *Self, blob: anytype) !bool {
+        if (self.current_word == null) {
+            const word_index = self.index / @bitSizeOf(Word);
+            try self.loadWord(blob, word_index);
+        }
+
+        const bit_index: u5 = @intCast(self.index % @bitSizeOf(Word));
+        return (self.current_word.? >> bit_index) & 1 > 0;
+    }
+
+    pub fn readAll(_: *Self, _: []bool, _: anytype) !void {
+        @panic("todo");
+    }
+
+    fn loadWord(self: *Self, blob: anytype, word_index: usize) !void {
+        var buf: [@sizeOf(Word)]u8 = undefined;
+        const byte_index = word_index * @sizeOf(Word);
+        try blob.readAt(buf[0..], byte_index);
+        self.current_word = mem.readIntLittle(Word, &buf);
+    }
+};
+
 test "decoder" {
     const MemoryBlob = @import("../../MemoryBlob.zig");
 
@@ -157,20 +150,27 @@ test "decoder" {
     var decoder = Decoder.init();
     try decoder.begin(blob);
 
-    var value = try decoder.decode(blob);
+    var value = try decoder.read(blob);
     try std.testing.expectEqual(true, value);
-    value = try decoder.decode(blob);
+    decoder.next(1);
+    value = try decoder.read(blob);
     try std.testing.expectEqual(false, value);
-    value = try decoder.decode(blob);
+    decoder.next(1);
+    value = try decoder.read(blob);
     try std.testing.expectEqual(true, value);
-    value = try decoder.decode(blob);
+    decoder.next(1);
+    value = try decoder.read(blob);
     try std.testing.expectEqual(true, value);
-    value = try decoder.decode(blob);
+    decoder.next(1);
+    value = try decoder.read(blob);
     try std.testing.expectEqual(true, value);
-    value = try decoder.decode(blob);
+    decoder.next(1);
+    value = try decoder.read(blob);
     try std.testing.expectEqual(false, value);
-    value = try decoder.decode(blob);
+    decoder.next(1);
+    value = try decoder.read(blob);
     try std.testing.expectEqual(false, value);
-    value = try decoder.decode(blob);
+    decoder.next(1);
+    value = try decoder.read(blob);
     try std.testing.expectEqual(false, value);
 }
