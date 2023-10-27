@@ -57,6 +57,6 @@ pub const Ref = struct {
     }
 
     pub fn bind(self: Self, stmt: Stmt, index: usize) !void {
-        try stmt.bindSqliteValue(index, self.value);
+        try stmt.bindSqliteValue(index, self);
     }
 };

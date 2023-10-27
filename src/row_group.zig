@@ -17,7 +17,7 @@ const SegmentReader = segment.Reader;
 const SegmentValue = segment.Value;
 const SegmentWriter = segment.Writer;
 
-const OwnedValue = @import("value.zig").OwnedValue;
+const MemoryValue = @import("value.zig").MemoryValue;
 
 const PrimaryIndex = @import("PrimaryIndex.zig");
 const RowGroupEntry = PrimaryIndex.RowGroupEntry;
@@ -53,7 +53,7 @@ pub fn create(
         arena.allocator(),
         columns_len,
     );
-    var start_sort_key = try arena.allocator().alloc(OwnedValue, sort_key_len);
+    var start_sort_key = try arena.allocator().alloc(MemoryValue, sort_key_len);
     var start_rowid: i64 = undefined;
     var row_group_entry: RowGroupEntry = .{
         .rowid_segment_id = undefined,
@@ -78,7 +78,7 @@ pub fn create(
         const value = records.readValue(idx);
         for (schema.sort_key.items, 0..) |sk_col_rank, sk_rank| {
             if (sk_col_rank == idx) {
-                const owned_value = try OwnedValue.fromRef(arena.allocator(), value);
+                const owned_value = try MemoryValue.fromRef(arena.allocator(), value);
                 start_sort_key[sk_rank] = owned_value;
                 break;
             }
@@ -286,7 +286,7 @@ pub const Cursor = struct {
 };
 
 test "row group: round trip" {
-    const OwnedRow = @import("value.zig").OwnedRow;
+    const MemoryTuple = @import("value.zig").MemoryTuple;
 
     const conn = try @import("sqlite3/Conn.zig").openInMemory();
     defer conn.close();
@@ -313,7 +313,7 @@ test "row group: round trip" {
 
     var pidx = try PrimaryIndex.create(&arena, &arena, conn, "foo", &schema);
 
-    var table_values = [_][3]OwnedValue{
+    var table_values = [_][3]MemoryValue{
         .{
             .{ .Text = "Alpha" }, .{ .Integer = 7 }, .{ .Integer = 100 },
         },
@@ -330,13 +330,13 @@ test "row group: round trip" {
     const rowids = [_]i64{ 1, 2, 4, 3 };
 
     for (&table_values) |*row| {
-        _ = try pidx.insertInsertEntry(OwnedRow.init(null, row));
+        _ = try pidx.insertInsertEntry(MemoryTuple.init(row));
     }
 
     {
         var rg_entry_handle = try pidx.precedingRowGroup(
             1,
-            OwnedRow.init(null, &table_values[0]),
+            MemoryTuple.init(&table_values[0]),
         );
         defer rg_entry_handle.deinit();
         var iter = try pidx.stagedInserts(&rg_entry_handle);
@@ -348,7 +348,7 @@ test "row group: round trip" {
     var cursor = try Cursor.init(arena.allocator(), &segment_db, &schema);
     var rg_entry_handle = try pidx.precedingRowGroup(
         1,
-        OwnedRow.init(null, &table_values[0]),
+        MemoryTuple.init(&table_values[0]),
     );
     defer rg_entry_handle.deinit();
     const row_group = rg_entry_handle.row_group;

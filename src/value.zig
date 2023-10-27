@@ -7,7 +7,7 @@ const sqlite_value = @import("sqlite3/value.zig");
 const ValueType = sqlite_value.ValueType;
 const ValueRef = sqlite_value.Ref;
 
-pub const OwnedValue = union(enum) {
+pub const MemoryValue = union(enum) {
     const Self = @This();
 
     Null,
@@ -85,19 +85,15 @@ pub const OwnedValue = union(enum) {
     }
 };
 
-pub const OwnedRow = struct {
+pub const MemoryTuple = struct {
     const Self = @This();
 
-    rowid: ?i64,
-    values: []OwnedValue,
+    values: []MemoryValue,
 
-    pub const Value = OwnedValue;
+    pub const Value = MemoryValue;
 
-    pub fn init(rowid: ?i64, values: []OwnedValue) Self {
-        return .{
-            .rowid = rowid,
-            .values = values,
-        };
+    pub fn init(values: []MemoryValue) Self {
+        return .{ .values = values };
     }
 
     pub fn deinit(self: *Self, allocator: Allocator) void {
@@ -107,17 +103,13 @@ pub const OwnedRow = struct {
         allocator.free(self.values);
     }
 
-    pub fn readRowid(self: Self) OwnedValue {
-        return .{ .Integer = self.rowid.? };
-    }
-
     /// Number of values in this change set (not including rowid). Should not be called
     /// when change type is `.Delete`
     pub fn valuesLen(self: Self) usize {
         return self.values.len;
     }
 
-    pub fn readValue(self: Self, index: usize) OwnedValue {
+    pub fn readValue(self: Self, index: usize) MemoryValue {
         return self.values[index];
     }
 };

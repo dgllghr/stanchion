@@ -6,6 +6,7 @@
 
 const c = @import("c.zig").c;
 const errors = @import("errors.zig");
+const ValueRef = @import("value.zig").Ref;
 
 const Self = @This();
 
@@ -95,8 +96,8 @@ pub fn bind(self: Self, comptime t: SqliteType, index: usize, value: ?t.Type()) 
     }
 }
 
-pub fn bindSqliteValue(self: Self, index: usize, value: ?*const c.sqlite3_value) !void {
-    const res = c.sqlite3_bind_value(self.stmt, @intCast(index), value);
+pub fn bindSqliteValue(self: Self, index: usize, value: ValueRef) !void {
+    const res = c.sqlite3_bind_value(self.stmt, @intCast(index), value.value);
     if (res != c.SQLITE_OK) {
         return errors.errorFromResultCode(res);
     }
@@ -124,8 +125,8 @@ pub fn next(self: Self) !bool {
     return true;
 }
 
-pub fn readSqliteValue(self: Self, index: usize) ?*c.sqlite3_value {
-    return c.sqlite3_column_value(self.stmt, @intCast(index));
+pub fn readSqliteValue(self: Self, index: usize) ValueRef {
+    return .{ .value = c.sqlite3_column_value(self.stmt, @intCast(index)) };
 }
 
 pub fn read(

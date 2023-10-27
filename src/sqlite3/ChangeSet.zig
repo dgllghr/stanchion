@@ -5,7 +5,7 @@ const Self = @This();
 
 values: []?*c.sqlite3_value,
 
-pub const Value = ?*c.sqlite3_value;
+pub const Value = ValueRef;
 
 pub const ChangeType = enum {
     Insert,
@@ -36,7 +36,7 @@ pub fn readRowid(self: Self) ValueRef {
 /// Number of values in this change set (not including rowid). Should not be called when
 /// change type is `.Delete`
 pub fn valuesLen(self: Self) usize {
-    return self.values.len - 1;
+    return self.values.len - 2;
 }
 
 pub fn readValue(self: Self, index: usize) ValueRef {

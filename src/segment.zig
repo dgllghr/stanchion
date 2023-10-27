@@ -306,14 +306,14 @@ const PrimaryEncoder = union(enum) {
 };
 
 test "segment planner" {
-    const OwnedValue = @import("value.zig").OwnedValue;
+    const MemoryValue = @import("value.zig").MemoryValue;
 
     var planner = Planner.init(.{
         .data_type = .Integer,
         .nullable = true,
     });
     for (0..10) |v| {
-        planner.next(OwnedValue{
+        planner.next(MemoryValue{
             .Integer = @as(i64, @intCast(v)),
         });
     }
@@ -322,7 +322,7 @@ test "segment planner" {
 }
 
 test "segment writer" {
-    const OwnedValue = @import("value.zig").OwnedValue;
+    const MemoryValue = @import("value.zig").MemoryValue;
 
     const conn = try @import("sqlite3/Conn.zig").openInMemory();
     defer conn.close();
@@ -359,7 +359,7 @@ test "segment writer" {
     const cont = try writer.begin();
     try std.testing.expect(cont);
     for (0..10) |v| {
-        try writer.write(OwnedValue{
+        try writer.write(MemoryValue{
             .Integer = @as(i64, @intCast(v)),
         });
     }
@@ -536,7 +536,7 @@ const PrimaryDecoder = union(enum) {
 };
 
 test "segment reader" {
-    const OwnedValue = @import("value.zig").OwnedValue;
+    const MemoryValue = @import("value.zig").MemoryValue;
 
     const conn = try @import("sqlite3/Conn.zig").openInMemory();
     defer conn.close();
@@ -573,7 +573,7 @@ test "segment reader" {
     const cont = try writer.begin();
     try std.testing.expect(cont);
     for (0..10) |v| {
-        try writer.write(OwnedValue{
+        try writer.write(MemoryValue{
             .Integer = @as(i64, @intCast(v)),
         });
     }

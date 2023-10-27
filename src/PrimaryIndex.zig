@@ -36,7 +36,7 @@ inserts_iterator_from_start: StmtCell,
 delete_staged_inserts_range: StmtCell,
 entries_iterator: StmtCell,
 
-sort_key_buf: []?*sqlite_c.sqlite3_value,
+sort_key_buf: []ValueRef,
 
 /// The primary index holds two types of entries. This is the enum that differentiates
 /// the entries.
@@ -134,7 +134,7 @@ pub fn open(
 ) !Self {
     const sort_key = schema.sort_key.items;
     const sort_key_buf = try static_arena.allocator()
-        .alloc(?*sqlite_c.sqlite3_value, sort_key.len);
+        .alloc(ValueRef, sort_key.len);
 
     var self = Self{
         .conn = conn,
@@ -248,7 +248,7 @@ pub const RowGroupEntryHandle = union(enum) {
         /// Owned by the PrimaryIndex
         cell: *StmtCell,
         /// Owned by the PrimaryIndex
-        sort_key: []?*sqlite_c.sqlite3_value,
+        sort_key: []ValueRef,
         rowid: i64,
     },
 
@@ -328,8 +328,8 @@ pub fn insertInsertEntry(self: *Self, values: anytype) !i64 {
 }
 
 test "primary index: insert" {
-    const OwnedRow = @import("value.zig").OwnedRow;
-    const OwnedValue = @import("value.zig").OwnedValue;
+    const MemoryTuple = @import("value.zig").MemoryTuple;
+    const MemoryValue = @import("value.zig").MemoryValue;
 
     const conn = try @import("sqlite3/Conn.zig").openInMemory();
     defer conn.close();
@@ -366,21 +366,19 @@ test "primary index: insert" {
     var primary_index = try create(&arena, &arena, conn, "test", &schema);
     defer primary_index.deinit();
 
-    var row = [_]OwnedValue{
+    var row = [_]MemoryValue{
         .{ .Blob = "magnitude" },
         .{ .Integer = 100 },
     };
-    _ = try primary_index.insertInsertEntry(OwnedRow{
-        .rowid = null,
+    _ = try primary_index.insertInsertEntry(MemoryTuple{
         .values = &row,
     });
 
-    row = [_]OwnedValue{
+    row = [_]MemoryValue{
         .{ .Blob = "amplitude" },
         .{ .Integer = 7 },
     };
-    _ = try primary_index.insertInsertEntry(OwnedRow{
-        .rowid = null,
+    _ = try primary_index.insertInsertEntry(MemoryTuple{
         .values = &row,
     });
 }
@@ -413,11 +411,11 @@ pub const StagedInsertsIterator = struct {
     }
 
     pub fn readRowId(self: *@This()) ValueRef {
-        return ValueRef{ .value = self.stmt.readSqliteValue(1) };
+        return self.stmt.readSqliteValue(1);
     }
 
     pub fn readValue(self: *@This(), idx: usize) ValueRef {
-        return ValueRef{ .value = self.stmt.readSqliteValue(idx + 2) };
+        return self.stmt.readSqliteValue(idx + 2);
     }
 };
 
@@ -519,8 +517,8 @@ pub const Cursor = struct {
         return self.stmt.read(.Int64, false, 1);
     }
 
-    pub fn readColumnValue(self: @This(), idx: usize) ValueRef {
-        return ValueRef{ .value = self.stmt.readSqliteValue(idx + 4) };
+    pub fn read(self: @This(), col_idx: usize) ValueRef {
+        return self.stmt.readSqliteValue(col_idx + 4);
     }
 };
 

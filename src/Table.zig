@@ -426,7 +426,7 @@ pub const Cursor = struct {
             return;
         }
 
-        const value = self.pidx_cursor.readColumnValue(col_idx);
+        const value = self.pidx_cursor.read(col_idx);
         result.setSqliteValue(value);
     }
 };
