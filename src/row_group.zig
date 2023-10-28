@@ -224,7 +224,7 @@ pub const Cursor = struct {
     }
 
     pub fn eof(self: *Self) bool {
-        return self.index < self.row_group.record_count;
+        return self.index >= self.row_group.record_count;
     }
 
     pub fn next(self: *Self) !void {
