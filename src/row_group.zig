@@ -258,6 +258,19 @@ pub const Cursor = struct {
         return seg.read(self.value_buffer_allocator, &self.value_buffers[col_idx]);
     }
 
+    pub fn readInto(self: *Self, result: anytype, col_idx: usize) !void {
+        if (self.segments[col_idx] == null) {
+            try self.loadSegment(col_idx);
+        }
+
+        var seg = &self.segments[col_idx].?;
+        try seg.readInto(
+            result,
+            self.value_buffer_allocator,
+            &self.value_buffers[col_idx],
+        );
+    }
+
     fn loadRowidSegment(self: *Self) !void {
         var segment_reader = &self.rowid_segment;
         segment_reader.* = try SegmentReader.open(
@@ -265,7 +278,7 @@ pub const Cursor = struct {
             ColumnType.Rowid.data_type,
             self.row_group.rowid_segment_id,
         );
-        for (1..self.index) |_| {
+        for (0..self.index) |_| {
             try segment_reader.*.?.next();
         }
     }
@@ -279,7 +292,7 @@ pub const Cursor = struct {
             self.column_types[col_idx].data_type,
             segment_id,
         );
-        for (1..self.index) |_| {
+        for (0..self.index) |_| {
             try segment_reader.*.?.next();
         }
     }

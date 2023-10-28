@@ -411,18 +411,7 @@ pub const Cursor = struct {
     pub fn column(self: *Cursor, result: Result, col_idx: usize) !void {
         // TODO make this more efficient by passing the result into the cursors
         if (self.in_row_group) {
-            const value = try self.rg_cursor.read(col_idx);
-            if (value.isNull()) {
-                result.setNull();
-                return;
-            }
-            switch (value.data_type) {
-                .Boolean => result.setBool(value.asBool()),
-                .Integer => result.setI64(value.asI64()),
-                .Float => result.setF64(value.asF64()),
-                .Blob => result.setBlob(value.asBlob()),
-                .Text => result.setText(value.asText()),
-            }
+            try self.rg_cursor.readInto(result, col_idx);
             return;
         }
 

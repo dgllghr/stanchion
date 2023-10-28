@@ -508,6 +508,42 @@ pub const Reader = struct {
 
         return .{ .data_type = self.data_type, .primary = primary };
     }
+
+    pub fn readInto(
+        self: *Self,
+        result: anytype,
+        allocator: Allocator,
+        bytes_buf: *ArrayListUnmanaged(u8),
+    ) !void {
+        var present = true;
+        if (self.present) |*pres_stripe| {
+            present = try pres_stripe.decoder.read(pres_stripe.blob);
+        }
+
+        if (present) {
+            const prim_stripe = &self.primary.?;
+            switch (prim_stripe.decoder) {
+                .Bool => |*d| result.setBool(try d.read(prim_stripe.blob)),
+                .Int => |*d| result.setI64(try d.read(prim_stripe.blob)),
+                .Float => |*d| result.setF64(try d.read(prim_stripe.blob)),
+                .Byte => |*d| {
+                    var len_stripe = &self.length.?;
+                    const length = try len_stripe.decoder.read(len_stripe.blob);
+                    // TODO cache the length for use in `next`?
+                    try bytes_buf.resize(allocator, @intCast(length));
+                    try d.readAll(
+                        bytes_buf.items,
+                        prim_stripe.blob,
+                    );
+                    switch (self.data_type) {
+                        .Blob => result.setBlob(bytes_buf.items),
+                        .Text => result.setText(bytes_buf.items),
+                        else => unreachable,
+                    }
+                },
+            }
+        }
+    }
 };
 
 // TODO remove enum and use data_type from reader
