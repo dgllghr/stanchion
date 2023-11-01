@@ -60,7 +60,8 @@ pub const Migrations = struct {
             // TODO wrap each migration in a savepoint
             try applyMigration(conn, m);
 
-            try insert_migration_stmt.reset();
+            try insert_migration_stmt.clearBoundParams();
+            try insert_migration_stmt.resetExec();
             try insert_migration_stmt.bind(.Int32, 1, version);
             try insert_migration_stmt.exec();
         }
@@ -70,6 +71,7 @@ pub const Migrations = struct {
         const stmt = try conn.prepare(
             \\SELECT COALESCE(MAX(version), 0) FROM _stanchion_migrations
         );
+        defer stmt.deinit();
         if (!try stmt.next()) {
             return Error.QueryReturnedNoRows;
         }

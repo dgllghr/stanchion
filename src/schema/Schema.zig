@@ -1,6 +1,7 @@
 const std = @import("std");
 const fmt = std.fmt;
 const Allocator = std.mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const Type = std.builtin.Type;
 
@@ -18,6 +19,7 @@ pub const Error = error{ SortKeyColumnNotFound, ExecReturnedData };
 
 pub fn create(
     allocator: Allocator,
+    tmp_arena: *ArenaAllocator,
     db: *Db,
     table_id: i64,
     def: SchemaDef,
@@ -61,8 +63,7 @@ pub fn create(
             .sk_rank = sk_rank,
         };
 
-        // TODO this could use an arena allocator
-        try db.createColumn(allocator, table_id, &col);
+        try db.createColumn(allocator, tmp_arena, table_id, &col);
 
         columns.appendAssumeCapacity(col);
     }
@@ -73,10 +74,15 @@ pub fn create(
     };
 }
 
-pub fn load(allocator: Allocator, db: *Db, table_id: i64) !Self {
+pub fn load(
+    allocator: Allocator,
+    tmp_arena: *ArenaAllocator,
+    db: *Db,
+    table_id: i64,
+) !Self {
     var columns = ArrayListUnmanaged(Column){};
     var sort_key_len: usize = undefined;
-    try db.loadColumns(allocator, table_id, &columns, &sort_key_len);
+    try db.loadColumns(allocator, tmp_arena, table_id, &columns, &sort_key_len);
 
     var sort_key = try ArrayListUnmanaged(usize).initCapacity(allocator, sort_key_len);
     sort_key.expandToCapacity();

@@ -11,8 +11,6 @@ const vtab = @import("sqlite3/vtab.zig");
 const sqlite_c = @import("sqlite3/c.zig").c;
 const Result = vtab.Result;
 
-const StmtCell = @import("StmtCell.zig");
-
 const DbError = @import("db.zig").Error;
 const Migrations = @import("db.zig").Migrations;
 
@@ -85,13 +83,14 @@ pub fn create(
         .segment = segment.Db.init(conn),
     };
 
-    const table_id = db.table.insertTable(name) catch |e| {
+    const table_id = db.table.insertTable(cb_ctx.arena, name) catch |e| {
         cb_ctx.setErrorMessage("error inserting table: {any}", .{e});
         return e;
     };
 
     var s = Schema.create(
         allocator,
+        cb_ctx.arena,
         &db.schema,
         table_id,
         def,
@@ -175,13 +174,14 @@ pub fn connect(
         .segment = segment.Db.init(conn),
     };
 
-    const table_id = db.table.loadTable(name) catch |e| {
+    const table_id = db.table.loadTable(cb_ctx.arena, name) catch |e| {
         cb_ctx.setErrorMessage("error loading table: {any}", .{e});
         return e;
     };
 
     const s = Schema.load(
         allocator,
+        cb_ctx.arena,
         &db.schema,
         table_id,
     ) catch |e| {
@@ -208,7 +208,7 @@ pub fn connect(
         .name = name,
         .schema = s,
         .primary_index = primary_index,
-        .last_write_rowid = try db.table.readNextRowid(table_id),
+        .last_write_rowid = try db.table.readNextRowid(cb_ctx.arena, table_id),
     };
 }
 
@@ -242,7 +242,7 @@ pub fn update(
     change_set: ChangeSet,
 ) !void {
     if (change_set.changeType() == .Insert) {
-        rowid.* = self.primary_index.insertInsertEntry(change_set) catch |e| {
+        rowid.* = self.primary_index.insertInsertEntry(cb_ctx.arena, change_set) catch |e| {
             cb_ctx.setErrorMessage("failed insert insert entry: {any}", .{e});
             return e;
         };
@@ -252,10 +252,14 @@ pub fn update(
         // TODO do this at end of transaction (requires tracking which row groups got
         //      inserts)
 
-        var handle = try self.primary_index.precedingRowGroup(rowid.*, change_set);
+        var handle = try self.primary_index.precedingRowGroup(
+            cb_ctx.arena,
+            rowid.*,
+            change_set,
+        );
         defer handle.deinit();
 
-        var iter = try self.primary_index.stagedInserts(&handle);
+        var iter = try self.primary_index.stagedInserts(cb_ctx.arena, &handle);
         defer iter.deinit();
 
         var count: u32 = 0;
@@ -295,53 +299,57 @@ pub fn bestIndex(
     // }
 }
 
-pub fn open(self: *Self) !Cursor {
+pub fn open(
+    self: *Self,
+    cb_ctx: *vtab.CallbackContext,
+) !Cursor {
     return Cursor.init(
         self.allocator,
+        cb_ctx.arena,
         &self.db.segment,
         &self.schema,
         &self.primary_index,
     );
 }
 
-pub fn begin(_: *Self) !void {
+pub fn begin(_: *Self, _: *vtab.CallbackContext) !void {
     std.log.debug("txn begin", .{});
 }
 
-pub fn commit(self: *Self) !void {
+pub fn commit(self: *Self, cb_ctx: *vtab.CallbackContext) !void {
     std.log.debug("txn commit", .{});
-    try self.flushNextRowid();
+    try self.flushNextRowid(cb_ctx.arena);
 }
 
-pub fn rollback(self: *Self) !void {
+pub fn rollback(self: *Self, cb_ctx: *vtab.CallbackContext) !void {
     std.log.debug("txn rollback", .{});
-    try self.rollbackNextRowid();
+    try self.rollbackNextRowid(cb_ctx.arena);
 }
 
-pub fn savepoint(self: *Self, savepoint_id: i32) !void {
+pub fn savepoint(self: *Self, cb_ctx: *vtab.CallbackContext, savepoint_id: i32) !void {
     std.log.debug("txn savepoint {d}", .{savepoint_id});
-    try self.flushNextRowid();
+    try self.flushNextRowid(cb_ctx.arena);
 }
 
-pub fn release(self: *Self, savepoint_id: i32) !void {
+pub fn release(self: *Self, cb_ctx: *vtab.CallbackContext, savepoint_id: i32) !void {
     std.log.debug("txn release {d}", .{savepoint_id});
-    try self.rollbackNextRowid();
+    try self.rollbackNextRowid(cb_ctx.arena);
 }
 
-pub fn rollbackTo(self: *Self, savepoint_id: i32) !void {
+pub fn rollbackTo(self: *Self, cb_ctx: *vtab.CallbackContext, savepoint_id: i32) !void {
     std.log.debug("txn rollback to {d}", .{savepoint_id});
-    try self.rollbackNextRowid();
+    try self.rollbackNextRowid(cb_ctx.arena);
 }
 
-fn flushNextRowid(self: *Self) !void {
+fn flushNextRowid(self: *Self, tmp_arena: *ArenaAllocator) !void {
     if (self.last_write_rowid != self.primary_index.next_rowid) {
-        try self.db.table.updateRowid(self.id, self.primary_index.next_rowid);
+        try self.db.table.updateRowid(tmp_arena, self.id, self.primary_index.next_rowid);
         self.last_write_rowid = self.primary_index.next_rowid;
     }
 }
 
-fn rollbackNextRowid(self: *Self) !void {
-    const rowid = try self.db.table.readNextRowid(self.id);
+fn rollbackNextRowid(self: *Self, tmp_arena: *ArenaAllocator) !void {
+    const rowid = try self.db.table.readNextRowid(tmp_arena, self.id);
     self.primary_index.next_rowid = rowid;
     self.last_write_rowid = rowid;
 }
@@ -353,11 +361,12 @@ pub const Cursor = struct {
 
     pub fn init(
         allocator: Allocator,
+        tmp_arena: *ArenaAllocator,
         segment_db: *segment.Db,
         schema: *const Schema,
         primary_index: *PrimaryIndex,
     ) !Cursor {
-        var pidx_cursor = try primary_index.cursor();
+        var pidx_cursor = try primary_index.cursor(tmp_arena);
         errdefer pidx_cursor.deinit();
         const rg_cursor = try row_group.Cursor.init(allocator, segment_db, schema);
         return .{
@@ -421,75 +430,72 @@ pub const Cursor = struct {
 };
 
 const Db = struct {
+    const StmtCell = @import("stmt_cell.zig").StmtCell(Db);
+
     conn: Conn,
-    create_table: ?Stmt,
-    load_table: ?Stmt,
+    create_table: StmtCell,
+    load_table: StmtCell,
     read_next_rowid: StmtCell,
     update_next_rowid: StmtCell,
 
     pub fn init(conn: Conn) Db {
         return .{
             .conn = conn,
-            .create_table = null,
-            .load_table = null,
-            .read_next_rowid = StmtCell.init(
-                \\SELECT next_rowid FROM _stanchion_tables WHERE id = ?
-            ),
-            .update_next_rowid = StmtCell.init(
-                \\UPDATE _stanchion_tables SET next_rowid = ? WHERE id = ?
-            ),
+            .create_table = StmtCell.init(&insertTableDml),
+            .load_table = StmtCell.init(&loadTableQuery),
+            .read_next_rowid = StmtCell.init(&nextRowidQuery),
+            .update_next_rowid = StmtCell.init(&updateRowidDml),
         };
     }
 
     pub fn deinit(self: *Db) void {
+        self.create_table.deinit();
+        self.load_table.deinit();
         self.update_next_rowid.deinit();
         self.read_next_rowid.deinit();
-        if (self.create_table) |stmt| {
-            stmt.deinit();
-        }
-        if (self.load_table) |stmt| {
-            stmt.deinit();
-        }
     }
 
-    pub fn insertTable(self: *Db, name: []const u8) !i64 {
-        if (self.create_table == null) {
-            self.create_table = try self.conn.prepare(
-                \\INSERT INTO _stanchion_tables (name, next_rowid)
-                \\VALUES (?, 1)
-                \\RETURNING id
-            );
-        }
+    fn insertTableDml(_: *const Db, _: *ArenaAllocator) ![]const u8 {
+        return 
+        \\INSERT INTO _stanchion_tables (name, next_rowid)
+        \\VALUES (?, 1)
+        \\RETURNING id
+        ;
+    }
 
-        const stmt = self.create_table.?;
+    pub fn insertTable(self: *Db, tmp_arena: *ArenaAllocator, name: []const u8) !i64 {
+        const stmt = try self.create_table.getStmt(tmp_arena, self);
+        defer self.create_table.reset();
+
+        try stmt.bind(.Text, 1, name);
+        if (!try stmt.next()) {
+            return DbError.QueryReturnedNoRows;
+        }
+        return stmt.read(.Int64, false, 0);
+    }
+
+    fn loadTableQuery(_: *const Db, _: *ArenaAllocator) ![]const u8 {
+        return "SELECT id FROM _stanchion_tables WHERE name = ?";
+    }
+
+    pub fn loadTable(self: *Db, tmp_arena: *ArenaAllocator, name: []const u8) !i64 {
+        const stmt = try self.load_table.getStmt(tmp_arena, self);
+        defer self.load_table.reset();
+
         try stmt.bind(.Text, 1, name);
         if (!try stmt.next()) {
             return DbError.QueryReturnedNoRows;
         }
         const table_id = stmt.read(.Int64, false, 0);
-        try stmt.reset();
         return table_id;
     }
 
-    pub fn loadTable(self: *Db, name: []const u8) !i64 {
-        if (self.load_table == null) {
-            self.load_table = try self.conn.prepare(
-                \\SELECT id FROM _stanchion_tables WHERE name = ?
-            );
-        }
-
-        const stmt = self.load_table.?;
-        try stmt.bind(.Text, 1, name);
-        if (!try stmt.next()) {
-            return DbError.QueryReturnedNoRows;
-        }
-        const table_id = stmt.read(.Int64, false, 0);
-        try stmt.reset();
-        return table_id;
+    fn nextRowidQuery(_: *const Db, _: *ArenaAllocator) ![]const u8 {
+        return "SELECT next_rowid FROM _stanchion_tables WHERE id = ?";
     }
 
-    pub fn readNextRowid(self: *Db, table_id: i64) !i64 {
-        const stmt = try self.read_next_rowid.getStmt(self.conn);
+    pub fn readNextRowid(self: *Db, tmp_arena: *ArenaAllocator, table_id: i64) !i64 {
+        const stmt = try self.read_next_rowid.getStmt(tmp_arena, self);
         defer self.read_next_rowid.reset();
 
         try stmt.bind(.Int64, 1, table_id);
@@ -500,8 +506,12 @@ const Db = struct {
         return stmt.read(.Int64, false, 0);
     }
 
-    pub fn updateRowid(self: *Db, table_id: i64, rowid: i64) !void {
-        const stmt = try self.update_next_rowid.getStmt(self.conn);
+    fn updateRowidDml(_: *const Db, _: *ArenaAllocator) ![]const u8 {
+        return "UPDATE _stanchion_tables SET next_rowid = ? WHERE id = ?";
+    }
+
+    pub fn updateRowid(self: *Db, tmp_arena: *ArenaAllocator, table_id: i64, rowid: i64) !void {
+        const stmt = try self.update_next_rowid.getStmt(tmp_arena, self);
         defer self.update_next_rowid.reset();
 
         try stmt.bind(.Int64, 1, rowid);

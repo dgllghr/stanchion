@@ -615,6 +615,10 @@ pub fn VirtualTable(comptime Table: type) type {
         ) callconv(.C) c_int {
             const state = @fieldParentPtr(State, "vtab", vtab);
 
+            var arena = heap.ArenaAllocator.init(state.allocator);
+            defer arena.deinit();
+            var cb_ctx = CallbackContext{ .arena = &arena };
+
             var cursor_state = state.allocator.create(CursorState) catch {
                 std.log.err("out of memory", .{});
                 return c.SQLITE_ERROR;
@@ -624,7 +628,7 @@ pub fn VirtualTable(comptime Table: type) type {
             cursor_state.* = .{
                 .vtab_cursor = mem.zeroes(c.sqlite3_vtab_cursor),
                 .allocator = state.allocator,
-                .cursor = state.table.open() catch |e| {
+                .cursor = state.table.open(&cb_ctx) catch |e| {
                     std.log.err("error creating cursor: {any}", .{e});
                     return c.SQLITE_ERROR;
                 },
@@ -683,7 +687,7 @@ pub fn VirtualTable(comptime Table: type) type {
             n: c_int,
         ) callconv(.C) c_int {
             const state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
-            const result = Result { .ctx = ctx };
+            const result = Result{ .ctx = ctx };
             state.cursor.column(result, @intCast(n)) catch |e| {
                 std.log.err("error calling rowid on cursor: {any}", .{e});
                 return c.SQLITE_ERROR;
@@ -747,7 +751,12 @@ pub fn VirtualTable(comptime Table: type) type {
             vtab: [*c]c.sqlite3_vtab,
         ) c_int {
             const state = @fieldParentPtr(State, "vtab", vtab);
-            const full_args = .{state.table} ++ args;
+
+            var arena = heap.ArenaAllocator.init(state.allocator);
+            defer arena.deinit();
+            var cb_ctx = CallbackContext{ .arena = &arena };
+
+            const full_args = .{ state.table, &cb_ctx } ++ args;
 
             @call(.auto, function, full_args) catch |e| {
                 std.log.err("error calling {s} on table: {any}", .{ functionName, e });

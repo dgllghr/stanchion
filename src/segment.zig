@@ -180,9 +180,10 @@ pub const Writer = struct {
     }
 
     /// Creates an empty segment and initializes the writer to write to that segment
-    pub fn allocate(db: *Db, plan: Plan) !Self {
-        var handle = try db.allocate(Header.encoded_len + plan.header.totalStripesLen());
-        errdefer db.free(handle) catch {};
+    pub fn allocate(tmp_arena: *ArenaAllocator, db: *Db, plan: Plan) !Self {
+        const len = Header.encoded_len + plan.header.totalStripesLen();
+        var handle = try db.allocate(tmp_arena, len);
+        errdefer db.free(tmp_arena, handle) catch {};
         try plan.header.write(&handle.blob);
 
         var present: ?StripeWriter(stripe.Bool.Encoder) = null;
@@ -351,10 +352,13 @@ test "segment writer" {
         .primary = .{ .Int = .{ .direct = encoder } },
     };
 
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
     var db = Db.init(conn);
     defer db.deinit();
-    var writer = try Writer.allocate(&db, plan);
-    errdefer db.free(writer.handle) catch {};
+    var writer = try Writer.allocate(&arena, &db, plan);
+    errdefer db.free(&arena, writer.handle) catch {};
 
     const cont = try writer.begin();
     try std.testing.expect(cont);
@@ -601,10 +605,13 @@ test "segment reader" {
         .primary = .{ .Int = .{ .direct = encoder } },
     };
 
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
     var db = Db.init(conn);
     defer db.deinit();
-    var writer = try Writer.allocate(&db, plan);
-    defer db.free(writer.handle) catch {};
+    var writer = try Writer.allocate(&arena, &db, plan);
+    defer db.free(&arena, writer.handle) catch {};
 
     const cont = try writer.begin();
     try std.testing.expect(cont);

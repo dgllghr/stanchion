@@ -102,10 +102,10 @@ pub fn create(
 
     // Write
     // TODO free all segment blobs on error
-    rowid_writer = try SegmentWriter.allocate(segment_db, rowid_plan);
+    rowid_writer = try SegmentWriter.allocate(&arena, segment_db, rowid_plan);
     rowid_continue = try rowid_writer.begin();
     for (writers, plans, 0..) |*writer, *plan, idx| {
-        writer.* = try SegmentWriter.allocate(segment_db, plan.*);
+        writer.* = try SegmentWriter.allocate(&arena, segment_db, plan.*);
         const cont = try writer.begin();
         writers_continue.setValue(idx, cont);
     }
@@ -133,9 +133,18 @@ pub fn create(
 
     // Update index
 
-    try primary_index.deleteStagedInsertsRange(start_sort_key, start_rowid);
+    try primary_index.deleteStagedInsertsRange(
+        &arena,
+        start_sort_key,
+        start_rowid,
+    );
 
-    try primary_index.insertRowGroupEntry(start_sort_key, start_rowid, &row_group_entry);
+    try primary_index.insertRowGroupEntry(
+        &arena,
+        start_sort_key,
+        start_rowid,
+        &row_group_entry,
+    );
 }
 
 pub const Cursor = struct {
@@ -322,7 +331,7 @@ test "row group: round trip" {
         "size INTEGER NOT NULL",
         "SORT KEY (quadrant, sector)",
     });
-    const schema = try Schema.create(arena.allocator(), &schema_db, 1, schema_def);
+    const schema = try Schema.create(arena.allocator(), &arena, &schema_db, 1, schema_def);
 
     var pidx = try PrimaryIndex.create(&arena, &arena, conn, "foo", &schema);
 
@@ -343,16 +352,17 @@ test "row group: round trip" {
     const rowids = [_]i64{ 1, 2, 4, 3 };
 
     for (&table_values) |*row| {
-        _ = try pidx.insertInsertEntry(MemoryTuple.init(row));
+        _ = try pidx.insertInsertEntry(&arena, MemoryTuple.init(row));
     }
 
     {
         var rg_entry_handle = try pidx.precedingRowGroup(
+            &arena,
             1,
             MemoryTuple.init(&table_values[0]),
         );
         defer rg_entry_handle.deinit();
-        var iter = try pidx.stagedInserts(&rg_entry_handle);
+        var iter = try pidx.stagedInserts(&arena, &rg_entry_handle);
         defer iter.deinit();
 
         try create(arena.allocator(), &schema, &segment_db, &pidx, &iter);
@@ -360,12 +370,18 @@ test "row group: round trip" {
 
     var cursor = try Cursor.init(arena.allocator(), &segment_db, &schema);
     var rg_entry_handle = try pidx.precedingRowGroup(
+        &arena,
         1,
         MemoryTuple.init(&table_values[0]),
     );
     defer rg_entry_handle.deinit();
     const row_group = rg_entry_handle.row_group;
-    try pidx.readRowGroupEntry(cursor.rowGroup(), row_group.sort_key, row_group.rowid);
+    try pidx.readRowGroupEntry(
+        &arena,
+        cursor.rowGroup(),
+        row_group.sort_key,
+        row_group.rowid,
+    );
 
     var idx: usize = 0;
     while (!cursor.eof()) {

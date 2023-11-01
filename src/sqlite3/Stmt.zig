@@ -37,21 +37,19 @@ pub fn deinit(self: Self) void {
 }
 
 /// Restarts the executation of the statement with the same parameters
-pub fn restart(self: Self) !void {
+pub fn resetExec(self: Self) !void {
     var res = c.sqlite3_reset(self.stmt);
     if (res != c.SQLITE_OK) {
         return errors.errorFromResultCode(res);
     }
 }
 
-/// Resets both bound parameters and the execution state. This is unlike the sqlite
-/// API where bound parameters and execution state are reset separately.
-pub fn reset(self: Self) !void {
+/// Clears all paramters bound to this statement
+pub fn clearBoundParams(self: Self) !void {
     var res = c.sqlite3_clear_bindings(self.stmt);
     if (res != c.SQLITE_OK) {
         return errors.errorFromResultCode(res);
     }
-    try self.restart();
 }
 
 pub fn bindNull(self: Self, index: usize) !void {
