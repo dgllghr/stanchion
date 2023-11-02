@@ -21,7 +21,6 @@ pub fn create(
     allocator: Allocator,
     tmp_arena: *ArenaAllocator,
     db: *Db,
-    table_id: i64,
     def: SchemaDef,
 ) !Self {
     // Find and validate sort keys
@@ -63,7 +62,7 @@ pub fn create(
             .sk_rank = sk_rank,
         };
 
-        try db.createColumn(allocator, tmp_arena, table_id, &col);
+        try db.createColumn(allocator, tmp_arena, &col);
 
         columns.appendAssumeCapacity(col);
     }
@@ -78,11 +77,10 @@ pub fn load(
     allocator: Allocator,
     tmp_arena: *ArenaAllocator,
     db: *Db,
-    table_id: i64,
 ) !Self {
     var columns = ArrayListUnmanaged(Column){};
     var sort_key_len: usize = undefined;
-    try db.loadColumns(allocator, tmp_arena, table_id, &columns, &sort_key_len);
+    try db.loadColumns(allocator, tmp_arena, &columns, &sort_key_len);
 
     var sort_key = try ArrayListUnmanaged(usize).initCapacity(allocator, sort_key_len);
     sort_key.expandToCapacity();

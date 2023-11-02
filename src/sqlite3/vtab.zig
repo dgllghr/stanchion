@@ -412,7 +412,7 @@ pub fn VirtualTable(comptime Table: type) type {
 
         pub const module = if (versionGreaterThanOrEqualTo(3, 26, 0))
             c.sqlite3_module{
-                .iVersion = 0,
+                .iVersion = 3,
                 .xCreate = xCreate,
                 .xConnect = xConnect,
                 .xBestIndex = xBestIndex,
@@ -435,11 +435,11 @@ pub fn VirtualTable(comptime Table: type) type {
                 .xSavepoint = xSavepoint,
                 .xRelease = xRelease,
                 .xRollbackTo = xRollbackTo,
-                .xShadowName = null,
+                .xShadowName = xShadowName,
             }
         else
             c.sqlite3_module{
-                .iVersion = 0,
+                .iVersion = 2,
                 .xCreate = xCreate,
                 .xConnect = xConnect,
                 .xBestIndex = xBestIndex,
@@ -463,8 +463,6 @@ pub fn VirtualTable(comptime Table: type) type {
                 .xRelease = xRelease,
                 .xRollbackTo = xRollbackTo,
             };
-
-        table: Table,
 
         fn getModuleAllocator(ptr: ?*anyopaque) *mem.Allocator {
             return @ptrCast(@alignCast(ptr.?));
@@ -742,6 +740,11 @@ pub fn VirtualTable(comptime Table: type) type {
         ) callconv(.C) c_int {
             const sid: i32 = @intCast(savepoint_id);
             return callTableCallback("rollbackTo", Table.rollbackTo, .{sid}, vtab);
+        }
+
+        fn xShadowName(name: [*c]const u8) callconv(.C) c_int {
+            const n: [:0]const u8 = std.mem.span(name);
+            return @intFromBool(Table.isShadowName(n));
         }
 
         fn callTableCallback(

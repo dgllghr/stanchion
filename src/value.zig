@@ -92,14 +92,12 @@ pub const MemoryTuple = struct {
 
     pub const Value = MemoryValue;
 
-    pub fn init(values: []MemoryValue) Self {
+    pub fn init(allocator: Allocator, len: usize) !Self {
+        const values = try allocator.alloc(MemoryValue, len);
         return .{ .values = values };
     }
 
     pub fn deinit(self: *Self, allocator: Allocator) void {
-        for (self.values) |v| {
-            v.deinit(allocator);
-        }
         allocator.free(self.values);
     }
 

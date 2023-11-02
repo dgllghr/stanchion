@@ -17,12 +17,31 @@ const Self = @This();
 const StmtCell = stmt_cell.StmtCell(Self);
 
 conn: Conn,
+vtab_table_name: []const u8,
 load_columns: StmtCell,
 create_column: StmtCell,
 
-pub fn init(conn: Conn) Self {
+pub fn create(tmp_arena: *ArenaAllocator, conn: Conn, vtab_table_name: []const u8) !void {
+    const query = try fmt.allocPrintZ(
+        tmp_arena.allocator(),
+        \\CREATE TABLE "{s}_columns" (
+        \\  rank INTEGER NOT NULL,
+        \\  name TEXT NOT NULL COLLATE NOCASE,
+        \\  column_type TEXT NOT NULL,
+        \\  sk_rank INTEGER NULL,
+        \\  PRIMARY KEY (rank),
+        \\  UNIQUE (name)
+        \\) STRICT, WITHOUT ROWID
+    ,
+        .{vtab_table_name},
+    );
+    try conn.exec(query);
+}
+
+pub fn init(conn: Conn, vtab_table_name: []const u8) Self {
     return .{
         .conn = conn,
+        .vtab_table_name = vtab_table_name,
         .load_columns = StmtCell.init(&loadColumnsQuery),
         .create_column = StmtCell.init(&createColumnDml),
     };
@@ -33,19 +52,18 @@ pub fn deinit(self: *Self) void {
     self.create_column.deinit();
 }
 
-fn loadColumnsQuery(_: *const Self, _: *ArenaAllocator) ![]const u8 {
-    return
+fn loadColumnsQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+    return fmt.allocPrintZ(arena.allocator(),
         \\SELECT rank, name, column_type, sk_rank
-        \\FROM _stanchion_columns
-        \\WHERE table_id = ?
-        ;
+        \\FROM "{s}_columns"
+        \\ORDER BY rank
+    , .{self.vtab_table_name});
 }
 
 pub fn loadColumns(
     self: *Self,
     allocator: Allocator,
     tmp_arena: *ArenaAllocator,
-    table_id: i64,
     columns: *ArrayListUnmanaged(Column),
     sort_key_len: *usize,
 ) !void {
@@ -53,7 +71,6 @@ pub fn loadColumns(
     defer self.load_columns.reset();
 
     sort_key_len.* = 0;
-    try stmt.bind(.Int64, 1, table_id);
     while (try stmt.next()) {
         const col = try readColumn(allocator, stmt);
         try columns.append(allocator, col);
@@ -76,32 +93,30 @@ fn readColumn(allocator: Allocator, stmt: Stmt) !Column {
     };
 }
 
-fn createColumnDml(_: *const Self, _: *ArenaAllocator) ![]const u8 {
-    return
-        \\INSERT INTO _stanchion_columns (
-        \\  table_id, rank, name, column_type, sk_rank)
-        \\VALUES (?, ?, ?, ?, ?)
-        ;
+fn createColumnDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+    return fmt.allocPrintZ(arena.allocator(),
+        \\INSERT INTO "{s}_columns" (
+        \\  rank, name, column_type, sk_rank)
+        \\VALUES (?, ?, ?, ?)
+    , .{self.vtab_table_name});
 }
 
 pub fn createColumn(
     self: *Self,
     allocator: Allocator,
     tmp_arena: *ArenaAllocator,
-    table_id: i64,
     column: *const Column,
 ) !void {
     const stmt = try self.create_column.getStmt(tmp_arena, self);
     defer self.create_column.reset();
 
-    try stmt.bind(.Int64, 1, table_id);
-    try stmt.bind(.Int32, 2, column.rank);
-    try stmt.bind(.Text, 3, column.name);
+    try stmt.bind(.Int32, 1, column.rank);
+    try stmt.bind(.Text, 2, column.name);
     const column_type = try fmt.allocPrint(allocator, "{s}", .{column.column_type});
     defer allocator.free(column_type);
-    try stmt.bind(.Text, 4, column_type);
+    try stmt.bind(.Text, 3, column_type);
     const sk_rank: ?i32 = if (column.sk_rank) |r| @intCast(r) else null;
-    try stmt.bind(.Int32, 5, sk_rank);
+    try stmt.bind(.Int32, 4, sk_rank);
     try stmt.exec();
 }
 
@@ -109,16 +124,17 @@ test "create column" {
     const conn = try Conn.openInMemory();
     try @import("../Db.zig").Migrations.apply(conn);
 
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
     var column = Column{
         .rank = 0,
         .name = "first_col",
         .column_type = .{ .data_type = .Integer, .nullable = false },
         .sk_rank = 0,
     };
-    var db = Self.init(conn);
+    try Self.create(&arena, conn, "test");
+    var db = Self.init(conn, "test");
 
-    var arena = ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    try db.createColumn(arena.allocator(), &arena, 100, &column);
+    try db.createColumn(arena.allocator(), &arena, &column);
 }

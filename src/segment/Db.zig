@@ -1,4 +1,5 @@
 const std = @import("std");
+const fmt = std.fmt;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
@@ -13,6 +14,7 @@ const Self = @This();
 const StmtCell = stmt_cell.StmtCell(Self);
 
 conn: Conn,
+table_name: [:0]const u8,
 insert_segment: StmtCell,
 delete_segment: StmtCell,
 
@@ -26,12 +28,30 @@ pub const Handle = struct {
     }
 };
 
-const segments_table_name = "_stanchion_segments";
 const segment_column_name = "segment";
 
-pub fn init(conn: Conn) Self {
+pub fn create(tmp_arena: *ArenaAllocator, conn: Conn, vtab_table_name: []const u8) !void {
+    const query = try fmt.allocPrintZ(
+        tmp_arena.allocator(),
+        \\CREATE TABLE "{s}_segments" (
+        \\  id INTEGER NOT NULL PRIMARY KEY,
+        \\  segment BLOB NOT NULL
+        \\) STRICT
+    ,
+        .{vtab_table_name},
+    );
+    try conn.exec(query);
+}
+
+pub fn init(arena: *ArenaAllocator, conn: Conn, vtab_table_name: []const u8) !Self {
+    const table_name = try fmt.allocPrintZ(
+        arena.allocator(),
+        "{s}_segments",
+        .{vtab_table_name},
+    );
     return .{
         .conn = conn,
+        .table_name = table_name,
         .insert_segment = StmtCell.init(&insertSegmentDml),
         .delete_segment = StmtCell.init(&deleteSegmentDml),
     };
@@ -42,12 +62,13 @@ pub fn deinit(self: *Self) void {
     self.delete_segment.deinit();
 }
 
-fn insertSegmentDml(_: *const Self, _: *ArenaAllocator) ![]const u8 {
-    return
-        \\INSERT INTO _stanchion_segments (segment)
-        \\VALUES (ZEROBLOB(?))
-        \\RETURNING id
-        ;
+fn insertSegmentDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+    return fmt.allocPrintZ(arena.allocator(),
+    \\INSERT INTO "{s}" (segment)
+    \\VALUES (ZEROBLOB(?))
+    \\RETURNING id
+    , .{self.table_name}
+    );
 }
 
 pub fn allocate(self: *Self, tmp_arena: *ArenaAllocator, size: usize) !Handle {
@@ -60,7 +81,7 @@ pub fn allocate(self: *Self, tmp_arena: *ArenaAllocator, size: usize) !Handle {
 
     const blob = try Blob.open(
         self.conn,
-        segments_table_name,
+        self.table_name,
         segment_column_name,
         id,
     );
@@ -70,7 +91,7 @@ pub fn allocate(self: *Self, tmp_arena: *ArenaAllocator, size: usize) !Handle {
 pub fn open(self: *Self, id: i64) !Handle {
     const blob = try Blob.open(
         self.conn,
-        segments_table_name,
+        self.table_name,
         segment_column_name,
         id,
     );
@@ -80,11 +101,12 @@ pub fn open(self: *Self, id: i64) !Handle {
     };
 }
 
-fn deleteSegmentDml(_: *const Self, _: *ArenaAllocator) ![]const u8 {
-    return
-        \\DELETE FROM _stanchion_segments
-        \\WHERE id = ?
-        ;
+fn deleteSegmentDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+    return fmt.allocPrintZ(arena.allocator(),
+    \\DELETE FROM "{s}"
+    \\WHERE id = ?
+    , .{self.table_name}
+    );
 }
 
 pub fn free(self: *Self, tmp_arena: *ArenaAllocator, handle: Handle) !void {

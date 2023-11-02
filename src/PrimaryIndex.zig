@@ -1,5 +1,6 @@
 const std = @import("std");
 const fmt = std.fmt;
+const math = std.math;
 const mem = std.mem;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
@@ -24,27 +25,35 @@ const StmtCell = stmt_cell.StmtCell(Self);
 
 conn: Conn,
 
-table_name: []const u8,
+vtab_table_name: []const u8,
 columns_len: usize,
 sort_key: []const usize,
 
 next_rowid: i64,
+last_write_rowid: i64,
 
 insert_entry: StmtCell,
+/// This StmtCell holds the Stmt that can be held as a RowGroupEntryHandle, so only 1
+/// RowGroupEntryHandle can be held at a time
 get_row_group_entry: StmtCell,
 find_preceding_row_group: StmtCell,
 inserts_iterator: StmtCell,
 inserts_iterator_from_start: StmtCell,
 delete_staged_inserts_range: StmtCell,
 entries_iterator: StmtCell,
+load_next_rowid: Stmt,
+update_next_rowid: Stmt,
 
+/// Used by RowGroupHandle to store values of the sort key of the open row group entry
+/// TODO remove this and read directly from open Stmt
 sort_key_buf: []ValueRef,
 
-/// The primary index holds two types of entries. This is the enum that differentiates
-/// the entries.
+/// The primary index holds multiple types of entries. This is the tag that
+/// differentiates the entries.
 const EntryType = enum(u8) {
-    RowGroup = 1,
-    Insert = 2,
+    TableState = 1,
+    RowGroup = 2,
+    Insert = 3,
 
     fn bind(self: EntryType, stmt: Stmt, index: usize) !void {
         try stmt.bind(.Int32, index, @intCast(@intFromEnum(self)));
@@ -52,7 +61,7 @@ const EntryType = enum(u8) {
 };
 
 //
-// Create
+// Init
 //
 
 /// The `static_arena` is used to allocate any memory that lives for the lifetime of the
@@ -62,20 +71,47 @@ pub fn create(
     static_arena: *ArenaAllocator,
     tmp_arena: *ArenaAllocator,
     conn: Conn,
-    table_name: []const u8,
+    vtab_table_name: []const u8,
     schema: *const Schema,
 ) !Self {
     const ddl_formatter = CreateTableDdlFormatter{
-        .table_name = table_name,
+        .vtab_table_name = vtab_table_name,
         .schema = schema,
     };
     const ddl = try fmt.allocPrintZ(tmp_arena.allocator(), "{s}", .{ddl_formatter});
     try conn.exec(ddl);
-    return open(static_arena, conn, table_name, schema, 1);
+
+    const sort_key = schema.sort_key.items;
+    const sort_key_buf = try static_arena.allocator()
+        .alloc(ValueRef, sort_key.len);
+
+    var self = Self{
+        .conn = conn,
+        .vtab_table_name = vtab_table_name,
+        .columns_len = schema.columns.items.len,
+        .sort_key = sort_key,
+        .next_rowid = 1,
+        .last_write_rowid = 1,
+        .insert_entry = StmtCell.init(&insertEntryDml),
+        .get_row_group_entry = StmtCell.init(&readRowGroupEntryQuery),
+        .find_preceding_row_group = StmtCell.init(&precedingRowGroupQuery),
+        .inserts_iterator = StmtCell.init(&insertIteratorQuery),
+        .inserts_iterator_from_start = StmtCell.init(&insertIteratorFromStartQuery),
+        .delete_staged_inserts_range = StmtCell.init(&deleteInsertsRangeDml),
+        .entries_iterator = StmtCell.init(&entriesIteratorQuery),
+        .load_next_rowid = undefined,
+        .update_next_rowid = undefined,
+        .sort_key_buf = sort_key_buf,
+    };
+
+    try self.insertTableStateEntry(tmp_arena, schema);
+    try self.initTableStateStmts(tmp_arena, schema);
+
+    return self;
 }
 
 const CreateTableDdlFormatter = struct {
-    table_name: []const u8,
+    vtab_table_name: []const u8,
     schema: *const Schema,
 
     pub fn format(
@@ -85,9 +121,9 @@ const CreateTableDdlFormatter = struct {
         writer: anytype,
     ) !void {
         try writer.print(
-            \\CREATE TABLE "_stanchion_{s}_primary_index" (
+            \\CREATE TABLE "{s}_primaryindex" (
         ,
-            .{self.table_name},
+            .{self.vtab_table_name},
         );
         for (self.schema.sort_key.items, 0..) |sk_index, sk_rank| {
             const col = &self.schema.columns.items[sk_index];
@@ -102,9 +138,10 @@ const CreateTableDdlFormatter = struct {
             try writer.print("col_{d} ANY NULL,", .{rank});
         }
         try writer.print(
-        // Only used by the row group entry type
-            \\rowid_segment_id INTEGER NULL,
-            // Used by all entry types
+        // Used by row group entry type (rowid segment id) and table status (next
+        // rowid)
+            \\col_rowid INTEGER NULL,
+            // Used by all entry types. The rowid value that is part of the sort key
             \\rowid INTEGER NOT NULL,
             // Only used by the row group entry type to count the number of records
             // in the row group
@@ -117,22 +154,19 @@ const CreateTableDdlFormatter = struct {
             try writer.print("sk_value_{d},", .{sk_rank});
         }
         try writer.print("rowid)", .{});
+        // TODO partial unique index on table status entry?
         // TODO in tests it would be nice to add some check constraints to ensure
         //      data is populated correctly based on the entry_type
         try writer.print(") STRICT, WITHOUT ROWID", .{});
     }
 };
 
-//
-// Open
-//
-
 pub fn open(
     static_arena: *ArenaAllocator,
+    tmp_arena: *ArenaAllocator,
     conn: Conn,
-    table_name: []const u8,
+    vtab_table_name: []const u8,
     schema: *const Schema,
-    next_rowid: i64,
 ) !Self {
     const sort_key = schema.sort_key.items;
     const sort_key_buf = try static_arena.allocator()
@@ -140,10 +174,11 @@ pub fn open(
 
     var self = Self{
         .conn = conn,
-        .table_name = table_name,
+        .vtab_table_name = vtab_table_name,
         .columns_len = schema.columns.items.len,
         .sort_key = sort_key,
-        .next_rowid = next_rowid,
+        .next_rowid = 0,
+        .last_write_rowid = 0,
         .insert_entry = StmtCell.init(&insertEntryDml),
         .get_row_group_entry = StmtCell.init(&readRowGroupEntryQuery),
         .find_preceding_row_group = StmtCell.init(&precedingRowGroupQuery),
@@ -151,8 +186,13 @@ pub fn open(
         .inserts_iterator_from_start = StmtCell.init(&insertIteratorFromStartQuery),
         .delete_staged_inserts_range = StmtCell.init(&deleteInsertsRangeDml),
         .entries_iterator = StmtCell.init(&entriesIteratorQuery),
+        .load_next_rowid = undefined,
+        .update_next_rowid = undefined,
         .sort_key_buf = sort_key_buf,
     };
+
+    try self.initTableStateStmts(tmp_arena, schema);
+    try self.loadNextRowid();
 
     return self;
 }
@@ -171,6 +211,121 @@ pub fn deinit(self: *Self) void {
     self.inserts_iterator_from_start.deinit();
     self.delete_staged_inserts_range.deinit();
     self.entries_iterator.deinit();
+    self.load_next_rowid.deinit();
+    self.update_next_rowid.deinit();
+}
+
+//
+// Table state
+//
+
+fn insertTableStateEntry(
+    self: *Self,
+    tmp_arena: *ArenaAllocator,
+    schema: *const Schema,
+) !void {
+    const stmt = try self.insert_entry.getStmt(tmp_arena, self);
+    defer self.insert_entry.reset();
+
+    try EntryType.TableState.bind(stmt, 1);
+    // Record count (null)
+    try stmt.bindNull(2);
+    // Use col_rowid as the next rowid column
+    try stmt.bind(.Int64, 4, 1);
+
+    // Keep the table state entry first in the table by binding the minimum possible
+    // values to the sk_value_* columns and -1 to the rowid column
+    // Rowid column
+    try stmt.bind(.Int64, 3, -1);
+    for (schema.sort_key.items, 5..) |rank, idx| {
+        const data_type = schema.columns.items[rank].column_type.data_type;
+        try bindMinValue(stmt, idx, data_type);
+    }
+
+    // The col_* columns are unused by the table state entry
+
+    stmt.exec() catch |e| {
+        const err_msg = sqlite_c.sqlite3_errmsg(self.conn.conn);
+        std.log.err("error executing insert: {s}", .{err_msg});
+        return e;
+    };
+}
+
+fn initTableStateStmts(
+    self: *Self,
+    tmp_arena: *ArenaAllocator,
+    schema: *const Schema,
+) !void {
+    self.load_next_rowid = try self.conn.prepare(
+        try loadNextRowidQuery(self, tmp_arena),
+    );
+    errdefer self.load_next_rowid.deinit();
+    self.update_next_rowid = try self.conn.prepare(
+        try updateNextRowidDml(self, tmp_arena),
+    );
+    errdefer self.update_next_rowid.deinit();
+
+    for (schema.sort_key.items, 1..) |rank, idx| {
+        const data_type = schema.columns.items[rank].column_type.data_type;
+        try bindMinValue(self.load_next_rowid, idx, data_type);
+        // The first bound parameter in `update_next_rowid` is the new rowid
+        try bindMinValue(self.update_next_rowid, idx + 1, data_type);
+    }
+}
+
+fn bindMinValue(stmt: Stmt, idx: usize, data_type: DataType) !void {
+    switch (data_type) {
+        .Boolean => try stmt.bind(.Int32, idx, 0),
+        .Integer => try stmt.bind(.Int64, idx, math.minInt(i64)),
+        .Float => try stmt.bind(.Float, idx, math.floatMin(f64)),
+        .Text => try stmt.bind(.Text, idx, ""),
+        .Blob => try stmt.bind(.Blob, idx, ""),
+    }
+}
+
+fn loadNextRowidQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+    return fmt.allocPrintZ(arena.allocator(),
+        \\SELECT col_rowid
+        \\FROM "{s}_primaryindex"
+        \\WHERE ({s}, rowid) = ({s}, -1) AND entry_type = {d}
+    , .{
+        self.vtab_table_name,
+        ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
+        ParameterListFormatter{ .len = self.sort_key.len },
+        @intFromEnum(EntryType.TableState),
+    });
+}
+
+pub fn loadNextRowid(self: *Self) !void {
+    defer self.load_next_rowid.resetExec() catch {};
+
+    _ = try self.load_next_rowid.next();
+    const next_rowid = self.load_next_rowid.read(.Int64, false, 0);
+
+    self.next_rowid = next_rowid;
+    self.last_write_rowid = next_rowid;
+}
+
+fn updateNextRowidDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+    return fmt.allocPrintZ(arena.allocator(),
+        \\UPDATE "{s}_primaryindex"
+        \\SET col_rowid = ?
+        \\WHERE ({s}, rowid) = ({s}, -1) AND entry_type = {d}
+    , .{
+        self.vtab_table_name,
+        ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
+        ParameterListFormatter{ .len = self.sort_key.len },
+        @intFromEnum(EntryType.TableState),
+    });
+}
+
+pub fn persistNextRowid(self: *Self) !void {
+    defer self.update_next_rowid.resetExec() catch {};
+
+    try self.update_next_rowid.bind(.Int64, 1, self.next_rowid);
+    try self.update_next_rowid.exec();
+
+    self.last_write_rowid = self.next_rowid;
 }
 
 //
@@ -218,12 +373,12 @@ pub fn insertRowGroupEntry(
 
 fn readRowGroupEntryQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
-        \\SELECT record_count, rowid_segment_id, {s}
-        \\FROM "_stanchion_{s}_primary_index"
+        \\SELECT record_count, col_rowid, {s}
+        \\FROM "{s}_primaryindex"
         \\WHERE ({s}, rowid) = ({s}, ?) AND entry_type = {d}
     , .{
         ColumnListFormatter("col_{d}"){ .len = self.columns_len },
-        self.table_name,
+        self.vtab_table_name,
         ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
         ParameterListFormatter{ .len = self.sort_key.len },
         @intFromEnum(EntryType.RowGroup),
@@ -277,16 +432,16 @@ pub const RowGroupEntryHandle = union(enum) {
     }
 };
 
-fn precedingRowGroupQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8{
+fn precedingRowGroupQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
         \\SELECT {s}, rowid
-        \\FROM "_stanchion_{s}_primary_index"
+        \\FROM "{s}_primaryindex"
         \\WHERE ({s}, rowid) <= ({s}, ?) AND entry_type = {d}
         \\ORDER BY {s}, rowid DESC
         \\LIMIT 1
     , .{
         ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
-        self.table_name,
+        self.vtab_table_name,
         ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
         ParameterListFormatter{ .len = self.sort_key.len },
         @intFromEnum(EntryType.RowGroup),
@@ -457,14 +612,16 @@ pub const StagedInsertsIterator = struct {
 fn insertIteratorQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
         \\SELECT entry_type, rowid, {s}
-        \\FROM "_stanchion_{s}_primary_index"
-        \\WHERE ({s}, rowid) >= ({s}, ?)
+        \\FROM "{s}_primaryindex"
+        \\WHERE ({s}, rowid) >= ({s}, ?) AND entry_type IN ({d}, {d})
         \\ORDER BY {s}, rowid ASC
     , .{
         ColumnListFormatter("col_{d}"){ .len = self.columns_len },
-        self.table_name,
+        self.vtab_table_name,
         ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
         ParameterListFormatter{ .len = self.sort_key.len },
+        @intFromEnum(EntryType.Insert),
+        @intFromEnum(EntryType.RowGroup),
         ColumnListFormatter("sk_value_{d} ASC"){ .len = self.sort_key.len },
     });
 }
@@ -472,11 +629,14 @@ fn insertIteratorQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
 fn insertIteratorFromStartQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
         \\SELECT entry_type, rowid, {s}
-        \\FROM "_stanchion_{s}_primary_index"
+        \\FROM "{s}_primaryindex"
+        \\WHERE entry_type IN ({d}, {d})
         \\ORDER BY {s}, rowid ASC
     , .{
         ColumnListFormatter("col_{d}"){ .len = self.columns_len },
-        self.table_name,
+        self.vtab_table_name,
+        @intFromEnum(EntryType.Insert),
+        @intFromEnum(EntryType.RowGroup),
         ColumnListFormatter("sk_value_{d} ASC"){ .len = self.sort_key.len },
     });
 }
@@ -523,32 +683,32 @@ fn deleteInsertsRangeDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 
     return fmt.allocPrintZ(arena.allocator(),
         \\WITH end_rg_entry AS (
         \\  SELECT {s}, rowid
-        \\  FROM "_stanchion_{s}_primary_index"
+        \\  FROM "{s}_primaryindex"
         \\  WHERE ({s}, rowid) > ({s}, ?) AND entry_type = {d}
         \\  ORDER BY {s}, rowid ASC
         \\  LIMIT 1
         \\)
-        \\DELETE FROM "_stanchion_{s}_primary_index"
+        \\DELETE FROM "{s}_primaryindex"
         \\WHERE ({s}, rowid) IN (
         \\  SELECT {s}, pidx.rowid
-        \\  FROM "_stanchion_{s}_primary_index" pidx
+        \\  FROM "{s}_primaryindex" pidx
         \\  LEFT JOIN end_rg_entry e
         \\  WHERE ({s}, pidx.rowid) >= ({s}, ?) AND pidx.entry_type = {d}
         \\        AND (e.rowid IS NULL OR ({s}, pidx.rowid) < ({s}, e.rowid)))
     , .{
         // CTE
         ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
-        self.table_name,
+        self.vtab_table_name,
         ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
         ParameterListFormatter{ .len = self.sort_key.len },
         @intFromEnum(EntryType.RowGroup),
         ColumnListFormatter("sk_value_{d} ASC"){ .len = self.sort_key.len },
         // Delete
-        self.table_name,
+        self.vtab_table_name,
         ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
         // Subquery
         ColumnListFormatter("pidx.sk_value_{d}"){ .len = self.sort_key.len },
-        self.table_name,
+        self.vtab_table_name,
         ColumnListFormatter("pidx.sk_value_{d}"){ .len = self.sort_key.len },
         ParameterListFormatter{ .len = self.sort_key.len },
         @intFromEnum(EntryType.Insert),
@@ -626,12 +786,15 @@ pub const Cursor = struct {
 
 fn entriesIteratorQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
-        \\SELECT entry_type, rowid, record_count, rowid_segment_id, {s}
-        \\FROM "_stanchion_{s}_primary_index"
+        \\SELECT entry_type, rowid, record_count, col_rowid, {s}
+        \\FROM "{s}_primaryindex"
+        \\WHERE entry_type IN ({d}, {d})
         \\ORDER BY {s}, rowid ASC
     , .{
         ColumnListFormatter("col_{d}"){ .len = self.columns_len },
-        self.table_name,
+        self.vtab_table_name,
+        @intFromEnum(EntryType.RowGroup),
+        @intFromEnum(EntryType.Insert),
         ColumnListFormatter("sk_value_{d} ASC"){ .len = self.sort_key.len },
     });
 }
@@ -650,11 +813,11 @@ pub fn cursor(self: *Self, tmp_arena: *ArenaAllocator) !Cursor {
 
 fn insertEntryDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
-        \\INSERT INTO "_stanchion_{s}_primary_index" (
-        \\  entry_type, record_count, rowid, rowid_segment_id, {s}, {s}
+        \\INSERT INTO "{s}_primaryindex" (
+        \\  entry_type, record_count, rowid, col_rowid, {s}, {s}
         \\) VALUES (?, ?, ?, ?, {s})
     , .{
-        self.table_name,
+        self.vtab_table_name,
         ColumnListFormatter("sk_value_{d}"){ .len = self.sort_key.len },
         ColumnListFormatter("col_{d}"){ .len = self.columns_len },
         ParameterListFormatter{ .len = self.columns_len + self.sort_key.len },

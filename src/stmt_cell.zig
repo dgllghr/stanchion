@@ -29,7 +29,8 @@ pub fn StmtCell(comptime Ctx: type) type {
             }
         }
 
-        /// Only call reset after `getStmt`
+        /// Clears bound parameters of the statement and resets the execution. Only call
+        /// `reset` after `getStmt`
         pub fn reset(self: *Self) void {
             const s = self.stmt.?;
             s.clearBoundParams() catch {};

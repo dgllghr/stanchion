@@ -355,7 +355,8 @@ test "segment writer" {
     var arena = ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var db = Db.init(conn);
+    try Db.create(&arena, conn, "test");
+    var db = try Db.init(&arena, conn, "test");
     defer db.deinit();
     var writer = try Writer.allocate(&arena, &db, plan);
     errdefer db.free(&arena, writer.handle) catch {};
@@ -608,7 +609,8 @@ test "segment reader" {
     var arena = ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var db = Db.init(conn);
+    try Db.create(&arena, conn, "test");
+    var db = try Db.init(&arena, conn, "test");
     defer db.deinit();
     var writer = try Writer.allocate(&arena, &db, plan);
     defer db.free(&arena, writer.handle) catch {};

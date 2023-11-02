@@ -314,15 +314,17 @@ test "row group: round trip" {
     defer conn.close();
     try @import("db.zig").Migrations.apply(conn);
 
-    var db = SegmentDb.init(conn);
-    defer db.deinit();
-
     var arena = ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var schema_db = schema_mod.Db.init(conn);
+    const table_name = "test";
+
+    try schema_mod.Db.create(&arena, conn, table_name);
+    var schema_db = schema_mod.Db.init(conn, table_name);
     defer schema_db.deinit();
-    var segment_db = SegmentDb.init(conn);
+
+    try SegmentDb.create(&arena, conn, table_name);
+    var segment_db = try SegmentDb.init(&arena, conn, table_name);
     defer segment_db.deinit();
 
     const schema_def = try schema_mod.SchemaDef.parse(&arena, &[_][]const u8{
@@ -331,7 +333,7 @@ test "row group: round trip" {
         "size INTEGER NOT NULL",
         "SORT KEY (quadrant, sector)",
     });
-    const schema = try Schema.create(arena.allocator(), &arena, &schema_db, 1, schema_def);
+    const schema = try Schema.create(arena.allocator(), &arena, &schema_db, schema_def);
 
     var pidx = try PrimaryIndex.create(&arena, &arena, conn, "foo", &schema);
 
@@ -352,14 +354,14 @@ test "row group: round trip" {
     const rowids = [_]i64{ 1, 2, 4, 3 };
 
     for (&table_values) |*row| {
-        _ = try pidx.insertInsertEntry(&arena, MemoryTuple.init(row));
+        _ = try pidx.insertInsertEntry(&arena, MemoryTuple{ .values = row });
     }
 
     {
         var rg_entry_handle = try pidx.precedingRowGroup(
             &arena,
             1,
-            MemoryTuple.init(&table_values[0]),
+            MemoryTuple{ .values = &table_values[0] },
         );
         defer rg_entry_handle.deinit();
         var iter = try pidx.stagedInserts(&arena, &rg_entry_handle);
@@ -372,7 +374,7 @@ test "row group: round trip" {
     var rg_entry_handle = try pidx.precedingRowGroup(
         &arena,
         1,
-        MemoryTuple.init(&table_values[0]),
+        MemoryTuple{ .values = &table_values[0] },
     );
     defer rg_entry_handle.deinit();
     const row_group = rg_entry_handle.row_group;

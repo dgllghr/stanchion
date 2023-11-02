@@ -15,7 +15,6 @@ const DbError = @import("db.zig").Error;
 const Migrations = @import("db.zig").Migrations;
 
 const schema_mod = @import("schema.zig");
-const SchemaDb = schema_mod.Db;
 const SchemaDef = schema_mod.SchemaDef;
 const Schema = schema_mod.Schema;
 
@@ -30,15 +29,12 @@ const Self = @This();
 allocator: Allocator,
 table_static_arena: ArenaAllocator,
 db: struct {
-    schema: SchemaDb,
-    table: Db,
+    schema: schema_mod.Db,
     segment: segment.Db,
 },
-id: i64,
 name: []const u8,
 schema: Schema,
 primary_index: PrimaryIndex,
-last_write_rowid: i64,
 
 pub const InitError = error{
     NoColumns,
@@ -77,22 +73,17 @@ pub fn create(
         return e;
     };
 
+    try schema_mod.Db.create(cb_ctx.arena, conn, name);
+    try segment.Db.create(cb_ctx.arena, conn, name);
     var db = .{
-        .table = Db.init(conn),
-        .schema = SchemaDb.init(conn),
-        .segment = segment.Db.init(conn),
-    };
-
-    const table_id = db.table.insertTable(cb_ctx.arena, name) catch |e| {
-        cb_ctx.setErrorMessage("error inserting table: {any}", .{e});
-        return e;
+        .schema = schema_mod.Db.init(conn, name),
+        .segment = try segment.Db.init(&table_static_arena, conn, name),
     };
 
     var s = Schema.create(
-        allocator,
+        table_static_arena.allocator(),
         cb_ctx.arena,
         &db.schema,
-        table_id,
         def,
     ) catch |e| {
         cb_ctx.setErrorMessage("error creating schema: {any}", .{e});
@@ -114,11 +105,9 @@ pub fn create(
         .allocator = allocator,
         .table_static_arena = table_static_arena,
         .db = db,
-        .id = table_id,
         .name = name,
         .schema = s,
         .primary_index = primary_index,
-        .last_write_rowid = 1,
     };
 }
 
@@ -127,7 +116,7 @@ test "create table" {
     defer conn.close();
     try Migrations.apply(conn);
 
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    var arena = ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var cb_ctx = vtab.CallbackContext{
         .arena = &arena,
@@ -169,21 +158,14 @@ pub fn connect(
     const name = try table_static_arena.allocator().dupe(u8, args[2]);
 
     var db = .{
-        .table = Db.init(conn),
-        .schema = SchemaDb.init(conn),
-        .segment = segment.Db.init(conn),
-    };
-
-    const table_id = db.table.loadTable(cb_ctx.arena, name) catch |e| {
-        cb_ctx.setErrorMessage("error loading table: {any}", .{e});
-        return e;
+        .schema = schema_mod.Db.init(conn, name),
+        .segment = try segment.Db.init(&table_static_arena, conn, name),
     };
 
     const s = Schema.load(
-        allocator,
+        table_static_arena.allocator(),
         cb_ctx.arena,
         &db.schema,
-        table_id,
     ) catch |e| {
         cb_ctx.setErrorMessage("error loading schema: {any}", .{e});
         return e;
@@ -191,10 +173,10 @@ pub fn connect(
 
     const primary_index = PrimaryIndex.open(
         &table_static_arena,
+        cb_ctx.arena,
         conn,
         name,
         &s,
-        1,
     ) catch |e| {
         cb_ctx.setErrorMessage("error opening primary index: {any}", .{e});
         return e;
@@ -204,11 +186,9 @@ pub fn connect(
         .allocator = allocator,
         .table_static_arena = table_static_arena,
         .db = db,
-        .id = table_id,
         .name = name,
         .schema = s,
         .primary_index = primary_index,
-        .last_write_rowid = try db.table.readNextRowid(cb_ctx.arena, table_id),
     };
 }
 
@@ -216,9 +196,7 @@ pub fn disconnect(self: *Self) void {
     self.primary_index.deinit();
     self.db.segment.deinit();
     self.db.schema.deinit();
-    self.db.table.deinit();
 
-    self.schema.deinit(self.allocator);
     self.table_static_arena.deinit();
 }
 
@@ -316,42 +294,45 @@ pub fn begin(_: *Self, _: *vtab.CallbackContext) !void {
     std.log.debug("txn begin", .{});
 }
 
-pub fn commit(self: *Self, cb_ctx: *vtab.CallbackContext) !void {
+pub fn commit(self: *Self, _: *vtab.CallbackContext) !void {
     std.log.debug("txn commit", .{});
-    try self.flushNextRowid(cb_ctx.arena);
+    try self.primary_index.persistNextRowid();
 }
 
-pub fn rollback(self: *Self, cb_ctx: *vtab.CallbackContext) !void {
+pub fn rollback(self: *Self, _: *vtab.CallbackContext) !void {
     std.log.debug("txn rollback", .{});
-    try self.rollbackNextRowid(cb_ctx.arena);
+    try self.primary_index.loadNextRowid();
 }
 
-pub fn savepoint(self: *Self, cb_ctx: *vtab.CallbackContext, savepoint_id: i32) !void {
+pub fn savepoint(self: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !void {
     std.log.debug("txn savepoint {d}", .{savepoint_id});
-    try self.flushNextRowid(cb_ctx.arena);
+    try self.primary_index.persistNextRowid();
 }
 
-pub fn release(self: *Self, cb_ctx: *vtab.CallbackContext, savepoint_id: i32) !void {
+pub fn release(self: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !void {
     std.log.debug("txn release {d}", .{savepoint_id});
-    try self.rollbackNextRowid(cb_ctx.arena);
+    try self.primary_index.loadNextRowid();
 }
 
-pub fn rollbackTo(self: *Self, cb_ctx: *vtab.CallbackContext, savepoint_id: i32) !void {
+pub fn rollbackTo(self: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !void {
     std.log.debug("txn rollback to {d}", .{savepoint_id});
-    try self.rollbackNextRowid(cb_ctx.arena);
+    try self.primary_index.loadNextRowid();
 }
 
-fn flushNextRowid(self: *Self, tmp_arena: *ArenaAllocator) !void {
-    if (self.last_write_rowid != self.primary_index.next_rowid) {
-        try self.db.table.updateRowid(tmp_arena, self.id, self.primary_index.next_rowid);
-        self.last_write_rowid = self.primary_index.next_rowid;
+const shadowNames = [_][:0]const u8 {
+    "segments",
+    "columns",
+    "primaryindex",
+};
+
+pub fn isShadowName(name: [:0]const u8) bool {
+    std.log.warn("checking shadnow name: {s}", .{name});
+    for (shadowNames) |sn| {
+        if (mem.eql(u8, sn, name)) {
+            return true;
+        }
     }
-}
-
-fn rollbackNextRowid(self: *Self, tmp_arena: *ArenaAllocator) !void {
-    const rowid = try self.db.table.readNextRowid(tmp_arena, self.id);
-    self.primary_index.next_rowid = rowid;
-    self.last_write_rowid = rowid;
+    return false;
 }
 
 pub const Cursor = struct {
@@ -426,97 +407,5 @@ pub const Cursor = struct {
 
         const value = self.pidx_cursor.read(col_idx);
         result.setSqliteValue(value);
-    }
-};
-
-const Db = struct {
-    const StmtCell = @import("stmt_cell.zig").StmtCell(Db);
-
-    conn: Conn,
-    create_table: StmtCell,
-    load_table: StmtCell,
-    read_next_rowid: StmtCell,
-    update_next_rowid: StmtCell,
-
-    pub fn init(conn: Conn) Db {
-        return .{
-            .conn = conn,
-            .create_table = StmtCell.init(&insertTableDml),
-            .load_table = StmtCell.init(&loadTableQuery),
-            .read_next_rowid = StmtCell.init(&nextRowidQuery),
-            .update_next_rowid = StmtCell.init(&updateRowidDml),
-        };
-    }
-
-    pub fn deinit(self: *Db) void {
-        self.create_table.deinit();
-        self.load_table.deinit();
-        self.update_next_rowid.deinit();
-        self.read_next_rowid.deinit();
-    }
-
-    fn insertTableDml(_: *const Db, _: *ArenaAllocator) ![]const u8 {
-        return 
-        \\INSERT INTO _stanchion_tables (name, next_rowid)
-        \\VALUES (?, 1)
-        \\RETURNING id
-        ;
-    }
-
-    pub fn insertTable(self: *Db, tmp_arena: *ArenaAllocator, name: []const u8) !i64 {
-        const stmt = try self.create_table.getStmt(tmp_arena, self);
-        defer self.create_table.reset();
-
-        try stmt.bind(.Text, 1, name);
-        if (!try stmt.next()) {
-            return DbError.QueryReturnedNoRows;
-        }
-        return stmt.read(.Int64, false, 0);
-    }
-
-    fn loadTableQuery(_: *const Db, _: *ArenaAllocator) ![]const u8 {
-        return "SELECT id FROM _stanchion_tables WHERE name = ?";
-    }
-
-    pub fn loadTable(self: *Db, tmp_arena: *ArenaAllocator, name: []const u8) !i64 {
-        const stmt = try self.load_table.getStmt(tmp_arena, self);
-        defer self.load_table.reset();
-
-        try stmt.bind(.Text, 1, name);
-        if (!try stmt.next()) {
-            return DbError.QueryReturnedNoRows;
-        }
-        const table_id = stmt.read(.Int64, false, 0);
-        return table_id;
-    }
-
-    fn nextRowidQuery(_: *const Db, _: *ArenaAllocator) ![]const u8 {
-        return "SELECT next_rowid FROM _stanchion_tables WHERE id = ?";
-    }
-
-    pub fn readNextRowid(self: *Db, tmp_arena: *ArenaAllocator, table_id: i64) !i64 {
-        const stmt = try self.read_next_rowid.getStmt(tmp_arena, self);
-        defer self.read_next_rowid.reset();
-
-        try stmt.bind(.Int64, 1, table_id);
-
-        if (!try stmt.next()) {
-            return DbError.QueryReturnedNoRows;
-        }
-        return stmt.read(.Int64, false, 0);
-    }
-
-    fn updateRowidDml(_: *const Db, _: *ArenaAllocator) ![]const u8 {
-        return "UPDATE _stanchion_tables SET next_rowid = ? WHERE id = ?";
-    }
-
-    pub fn updateRowid(self: *Db, tmp_arena: *ArenaAllocator, table_id: i64, rowid: i64) !void {
-        const stmt = try self.update_next_rowid.getStmt(tmp_arena, self);
-        defer self.update_next_rowid.reset();
-
-        try stmt.bind(.Int64, 1, rowid);
-        try stmt.bind(.Int64, 2, table_id);
-
-        try stmt.exec();
     }
 };
