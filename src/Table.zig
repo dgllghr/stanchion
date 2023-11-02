@@ -90,13 +90,7 @@ pub fn create(
         return e;
     };
 
-    const primary_index = PrimaryIndex.create(
-        &table_static_arena,
-        cb_ctx.arena,
-        conn,
-        name,
-        &s,
-    ) catch |e| {
+    const primary_index = PrimaryIndex.create(cb_ctx.arena, conn, name, &s) catch |e| {
         cb_ctx.setErrorMessage("error creating primary index: {any}", .{e});
         return e;
     };
@@ -172,7 +166,6 @@ pub fn connect(
     };
 
     const primary_index = PrimaryIndex.open(
-        &table_static_arena,
         cb_ctx.arena,
         conn,
         name,

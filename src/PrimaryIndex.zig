@@ -44,10 +44,6 @@ entries_iterator: StmtCell,
 load_next_rowid: Stmt,
 update_next_rowid: Stmt,
 
-/// Used by RowGroupHandle to store values of the sort key of the open row group entry
-/// TODO remove this and read directly from open Stmt
-sort_key_buf: []ValueRef,
-
 /// The primary index holds multiple types of entries. This is the tag that
 /// differentiates the entries.
 const EntryType = enum(u8) {
@@ -68,7 +64,6 @@ const EntryType = enum(u8) {
 /// primary index. The `tmp_arena` is used to allocate memory that can be freed any time
 /// after the function returns.
 pub fn create(
-    static_arena: *ArenaAllocator,
     tmp_arena: *ArenaAllocator,
     conn: Conn,
     vtab_table_name: []const u8,
@@ -81,15 +76,11 @@ pub fn create(
     const ddl = try fmt.allocPrintZ(tmp_arena.allocator(), "{s}", .{ddl_formatter});
     try conn.exec(ddl);
 
-    const sort_key = schema.sort_key.items;
-    const sort_key_buf = try static_arena.allocator()
-        .alloc(ValueRef, sort_key.len);
-
     var self = Self{
         .conn = conn,
         .vtab_table_name = vtab_table_name,
         .columns_len = schema.columns.items.len,
-        .sort_key = sort_key,
+        .sort_key = schema.sort_key.items,
         .next_rowid = 1,
         .last_write_rowid = 1,
         .insert_entry = StmtCell.init(&insertEntryDml),
@@ -101,7 +92,6 @@ pub fn create(
         .entries_iterator = StmtCell.init(&entriesIteratorQuery),
         .load_next_rowid = undefined,
         .update_next_rowid = undefined,
-        .sort_key_buf = sort_key_buf,
     };
 
     try self.insertTableStateEntry(tmp_arena, schema);
@@ -162,21 +152,16 @@ const CreateTableDdlFormatter = struct {
 };
 
 pub fn open(
-    static_arena: *ArenaAllocator,
     tmp_arena: *ArenaAllocator,
     conn: Conn,
     vtab_table_name: []const u8,
     schema: *const Schema,
 ) !Self {
-    const sort_key = schema.sort_key.items;
-    const sort_key_buf = try static_arena.allocator()
-        .alloc(ValueRef, sort_key.len);
-
     var self = Self{
         .conn = conn,
         .vtab_table_name = vtab_table_name,
         .columns_len = schema.columns.items.len,
-        .sort_key = sort_key,
+        .sort_key = schema.sort_key.items,
         .next_rowid = 0,
         .last_write_rowid = 0,
         .insert_entry = StmtCell.init(&insertEntryDml),
@@ -188,7 +173,6 @@ pub fn open(
         .entries_iterator = StmtCell.init(&entriesIteratorQuery),
         .load_next_rowid = undefined,
         .update_next_rowid = undefined,
-        .sort_key_buf = sort_key_buf,
     };
 
     try self.initTableStateStmts(tmp_arena, schema);
@@ -397,8 +381,8 @@ pub fn readRowGroupEntry(
     const stmt = try self.get_row_group_entry.getStmt(tmp_arena, self);
     defer self.get_row_group_entry.reset();
 
-    for (sort_key, 1..) |sk_value, idx| {
-        try stmt.bindSqliteValue(idx, sk_value);
+    for (0..sort_key.valuesLen(), 1..) |sk_idx, idx| {
+        try stmt.bindSqliteValue(idx, sort_key.readValue(sk_idx));
     }
     try stmt.bind(.Int64, self.sort_key.len + 1, rowid);
 
@@ -420,8 +404,26 @@ pub const RowGroupEntryHandle = union(enum) {
         /// Owned by the PrimaryIndex
         cell: *StmtCell,
         /// Owned by the PrimaryIndex
-        sort_key: []ValueRef,
+        stmt: Stmt,
+        sort_key_len: usize,
         rowid: i64,
+
+        pub const SortKey = struct {
+            sort_key_len: usize,
+            stmt: Stmt,
+
+            pub fn valuesLen(self: @This()) usize {
+                return self.sort_key_len;
+            }
+
+            pub fn readValue(self: @This(), index: usize) ValueRef {
+                return self.stmt.readSqliteValue(index);
+            }
+        };
+
+        pub fn sortKey(self: @This()) SortKey {
+            return .{ .stmt = self.stmt, .sort_key_len = self.sort_key_len };
+        }
     },
 
     pub fn deinit(self: *@This()) void {
@@ -430,6 +432,8 @@ pub const RowGroupEntryHandle = union(enum) {
             else => {},
         }
     }
+
+
 };
 
 fn precedingRowGroupQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
@@ -472,14 +476,12 @@ pub fn precedingRowGroup(
         return .start;
     }
 
-    for (0..self.sort_key.len) |idx| {
-        self.sort_key_buf[idx] = stmt.readSqliteValue(idx);
-    }
     const rg_rowid = stmt.read(.Int64, false, self.sort_key.len);
 
     return .{ .row_group = .{
         .cell = &self.find_preceding_row_group,
-        .sort_key = self.sort_key_buf,
+        .stmt = stmt,
+        .sort_key_len = self.sort_key.len,
         .rowid = rg_rowid,
     } };
 }
@@ -553,7 +555,7 @@ test "primary index: insert" {
     var arena = ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var primary_index = try create(&arena, &arena, conn, "test", &schema);
+    var primary_index = try create(&arena, conn, "test", &schema);
     defer primary_index.deinit();
 
     var row = [_]MemoryValue{
@@ -658,8 +660,9 @@ pub fn stagedInserts(
             iter.stmt = try self.inserts_iterator.getStmt(tmp_arena, self);
             errdefer self.inserts_iterator.reset();
 
+            const sort_key = handle.sortKey();
             for (0..self.sort_key.len) |idx| {
-                try iter.stmt.bindSqliteValue(idx + 1, handle.sort_key[idx]);
+                try iter.stmt.bindSqliteValue(idx + 1, sort_key.readValue(idx));
             }
             try iter.stmt.bind(.Int64, self.sort_key.len + 1, handle.rowid);
 

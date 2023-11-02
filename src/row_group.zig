@@ -335,7 +335,7 @@ test "row group: round trip" {
     });
     const schema = try Schema.create(arena.allocator(), &arena, &schema_db, schema_def);
 
-    var pidx = try PrimaryIndex.create(&arena, &arena, conn, "foo", &schema);
+    var pidx = try PrimaryIndex.create(&arena, conn, "foo", &schema);
 
     var table_values = [_][3]MemoryValue{
         .{
@@ -381,7 +381,7 @@ test "row group: round trip" {
     try pidx.readRowGroupEntry(
         &arena,
         cursor.rowGroup(),
-        row_group.sort_key,
+        row_group.sortKey(),
         row_group.rowid,
     );
 
