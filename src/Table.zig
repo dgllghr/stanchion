@@ -304,18 +304,17 @@ pub fn rollback(self: *Self, _: *vtab.CallbackContext) !void {
     try self.primary_index.loadNextRowid();
 }
 
-pub fn savepoint(self: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !void {
-    std.log.debug("txn savepoint {d}", .{savepoint_id});
-    try self.primary_index.persistNextRowid();
+pub fn savepoint(_: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !void {
+    std.log.debug("txn savepoint {d} begin", .{savepoint_id});
 }
 
 pub fn release(self: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !void {
-    std.log.debug("txn release {d}", .{savepoint_id});
-    try self.primary_index.loadNextRowid();
+    std.log.debug("txn savepoint {d} release", .{savepoint_id});
+    try self.primary_index.persistNextRowid();
 }
 
 pub fn rollbackTo(self: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !void {
-    std.log.debug("txn rollback to {d}", .{savepoint_id});
+    std.log.debug("txn savepoint {d} rollback", .{savepoint_id});
     try self.primary_index.loadNextRowid();
 }
 
@@ -326,7 +325,7 @@ const shadowNames = [_][:0]const u8 {
 };
 
 pub fn isShadowName(name: [:0]const u8) bool {
-    std.log.warn("checking shadnow name: {s}", .{name});
+    std.log.debug("checking shadnow name: {s}", .{name});
     for (shadowNames) |sn| {
         if (mem.eql(u8, sn, name)) {
             return true;
