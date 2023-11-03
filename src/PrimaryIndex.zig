@@ -33,14 +33,21 @@ next_rowid: i64,
 last_write_rowid: i64,
 
 insert_entry: StmtCell,
+
 /// This StmtCell holds the Stmt that can be held as a RowGroupEntryHandle, so only 1
 /// RowGroupEntryHandle can be held at a time
 get_row_group_entry: StmtCell,
+
 find_preceding_row_group: StmtCell,
+
+/// These StmtCells hold the Stmts that can be held as an StagedInsertsIterator, so only
+/// 1 StagedInsertsIterator can be held at a time
 inserts_iterator: StmtCell,
 inserts_iterator_from_start: StmtCell,
+
 delete_staged_inserts_range: StmtCell,
 entries_iterator: StmtCell,
+
 load_next_rowid: Stmt,
 update_next_rowid: Stmt,
 
@@ -284,10 +291,9 @@ pub fn loadNextRowid(self: *Self) !void {
     defer self.load_next_rowid.resetExec() catch {};
 
     _ = try self.load_next_rowid.next();
-    const next_rowid = self.load_next_rowid.read(.Int64, false, 0);
-
-    self.next_rowid = next_rowid;
-    self.last_write_rowid = next_rowid;
+    
+    self.next_rowid = self.load_next_rowid.read(.Int64, false, 0);
+    self.last_write_rowid = self.next_rowid;
 }
 
 fn updateNextRowidDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
@@ -432,8 +438,6 @@ pub const RowGroupEntryHandle = union(enum) {
             else => {},
         }
     }
-
-
 };
 
 fn precedingRowGroupQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
@@ -588,6 +592,7 @@ pub const StagedInsertsIterator = struct {
     pub fn restart(self: *@This()) !void {
         try self.stmt.resetExec();
 
+        // Skip the row group (the first row) when the iterator starts at a row group
         if (self.starts_at_row_group) {
             _ = try self.stmt.next();
         }
@@ -644,7 +649,8 @@ fn insertIteratorFromStartQuery(self: *const Self, arena: *ArenaAllocator) ![]co
 }
 
 /// Create an iterator that iterates over all pending inserts after the provided row
-/// group and before the subsequent row group.
+/// group and before the subsequent row group. Only one of these iterators can be active
+/// at a time.
 pub fn stagedInserts(
     self: *Self,
     tmp_arena: *ArenaAllocator,

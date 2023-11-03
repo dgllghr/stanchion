@@ -311,7 +311,7 @@ pub fn rollbackTo(self: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !voi
     try self.primary_index.loadNextRowid();
 }
 
-const shadowNames = [_][:0]const u8 {
+const shadowNames = [_][:0]const u8{
     "segments",
     "columns",
     "primaryindex",

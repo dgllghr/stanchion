@@ -30,9 +30,6 @@ pub fn create(
     primary_index: *PrimaryIndex,
     records: *StagedInsertsIterator,
 ) !void {
-    var arena = ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
     const sort_key_len = schema.sort_key.items.len;
     const columns_len = schema.columns.items.len;
 
@@ -41,6 +38,9 @@ pub fn create(
     //      into a struct so it can be reused
     // TODO or better yet, refactor the staged inserts so that they can be iterated
     //      column-oriented and this memory does not need to be allocated at all
+
+    var arena = ArenaAllocator.init(allocator);
+    defer arena.deinit();
 
     var rowid_planner: SegmentPlanner = undefined;
     var planners = try arena.allocator().alloc(SegmentPlanner, columns_len);
@@ -69,7 +69,7 @@ pub fn create(
     }
 
     // Assign the start sort key and start row id using the first row
-    // TODO if this returns false it should be an error (empty)
+    // TODO if this returns false it should be an error (empty row group)
     _ = try records.next();
     const start_rowid_value = records.readRowId();
     start_rowid = start_rowid_value.asI64();
@@ -101,13 +101,28 @@ pub fn create(
     }
 
     // Write
-    // TODO free all segment blobs on error
     rowid_writer = try SegmentWriter.allocate(&arena, segment_db, rowid_plan);
+    errdefer segment_db.free(&arena, rowid_writer.handle) catch |e| {
+        std.log.err("error freeing segment blob {d}: {any}", .{ rowid_writer.handle.id, e });
+    };
+    defer rowid_writer.handle.close();
     rowid_continue = try rowid_writer.begin();
-    for (writers, plans, 0..) |*writer, *plan, idx| {
+    var writer_idx: usize = 0;
+    errdefer for (0..writer_idx) |idx| {
+        segment_db.free(&arena, writers[idx].handle) catch |e| {
+            std.log.err("error freeing segment blob {d}: {any}", .{ writers[idx].handle.id, e });
+        };
+    };
+    defer for (0..writer_idx) |idx| {
+        writers[idx].handle.close();
+    };
+    for (writers, plans) |*writer, *plan| {
         writer.* = try SegmentWriter.allocate(&arena, segment_db, plan.*);
+        // TODO if an error occurs here, the blob handle won't be closed because
+        //      `writer_idx` has not been incremented in this iteration
         const cont = try writer.begin();
-        writers_continue.setValue(idx, cont);
+        writers_continue.setValue(writer_idx, cont);
+        writer_idx += 1;
     }
 
     try records.restart();
@@ -124,11 +139,9 @@ pub fn create(
 
     var handle = try rowid_writer.end();
     row_group_entry.rowid_segment_id = handle.id;
-    handle.close();
     for (writers, 0..) |*writer, idx| {
         handle = try writer.end();
         row_group_entry.column_segment_ids[idx] = handle.id;
-        handle.close();
     }
 
     // Update index
@@ -213,6 +226,14 @@ pub const Cursor = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        if (self.rowid_segment) |*s| {
+            s.handle.close();
+        }
+        for (self.segments) |*seg| {
+            if (seg.*) |*s| {
+                s.handle.close();
+            }
+        }
         for (self.value_buffers) |*buf| {
             buf.deinit(self.value_buffer_allocator);
         }

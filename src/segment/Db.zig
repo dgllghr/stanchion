@@ -23,8 +23,9 @@ pub const Handle = struct {
     blob: Blob,
 
     pub fn close(self: *@This()) void {
-        // TODO log the error
-        self.blob.close() catch {};
+        self.blob.close() catch |e| {
+            std.log.err("error closing segment blob {d}: {any}", .{self.id, e});
+        };
     }
 };
 
@@ -73,7 +74,7 @@ fn insertSegmentDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
 
 pub fn allocate(self: *Self, tmp_arena: *ArenaAllocator, size: usize) !Handle {
     const stmt = try self.insert_segment.getStmt(tmp_arena, self);
-    self.insert_segment.reset();
+    defer self.insert_segment.reset();
 
     try stmt.bind(.Int64, 1, @as(i64, @intCast(size)));
     _ = try stmt.next();
@@ -111,7 +112,7 @@ fn deleteSegmentDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
 
 pub fn free(self: *Self, tmp_arena: *ArenaAllocator, handle: Handle) !void {
     const stmt = try self.delete_segment.getStmt(tmp_arena, self);
-    self.delete_segment.reset();
+    defer self.delete_segment.reset();
 
     try stmt.bind(.Int64, 1, @as(i64, @intCast(handle.id)));
     try stmt.exec();
