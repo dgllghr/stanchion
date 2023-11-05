@@ -24,14 +24,14 @@ pub const Handle = struct {
 
     pub fn close(self: *@This()) void {
         self.blob.close() catch |e| {
-            std.log.err("error closing segment blob {d}: {any}", .{self.id, e});
+            std.log.err("error closing segment blob {d}: {any}", .{ self.id, e });
         };
     }
 };
 
 const segment_column_name = "segment";
 
-pub fn create(tmp_arena: *ArenaAllocator, conn: Conn, vtab_table_name: []const u8) !void {
+pub fn createTable(tmp_arena: *ArenaAllocator, conn: Conn, vtab_table_name: []const u8) !void {
     const query = try fmt.allocPrintZ(
         tmp_arena.allocator(),
         \\CREATE TABLE "{s}_segments" (
@@ -63,13 +63,22 @@ pub fn deinit(self: *Self) void {
     self.delete_segment.deinit();
 }
 
+pub fn dropTable(self: *Self, tmp_arena: *ArenaAllocator) !void {
+    const query = try fmt.allocPrintZ(
+        tmp_arena.allocator(),
+        \\DROP TABLE "{s}"
+    ,
+        .{self.table_name},
+    );
+    try self.conn.exec(query);
+}
+
 fn insertSegmentDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
-    \\INSERT INTO "{s}" (segment)
-    \\VALUES (ZEROBLOB(?))
-    \\RETURNING id
-    , .{self.table_name}
-    );
+        \\INSERT INTO "{s}" (segment)
+        \\VALUES (ZEROBLOB(?))
+        \\RETURNING id
+    , .{self.table_name});
 }
 
 pub fn allocate(self: *Self, tmp_arena: *ArenaAllocator, size: usize) !Handle {
@@ -104,10 +113,9 @@ pub fn open(self: *Self, id: i64) !Handle {
 
 fn deleteSegmentDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
-    \\DELETE FROM "{s}"
-    \\WHERE id = ?
-    , .{self.table_name}
-    );
+        \\DELETE FROM "{s}"
+        \\WHERE id = ?
+    , .{self.table_name});
 }
 
 pub fn free(self: *Self, tmp_arena: *ArenaAllocator, handle: Handle) !void {

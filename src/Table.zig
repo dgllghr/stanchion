@@ -66,15 +66,15 @@ pub fn create(
 
     const name = try table_static_arena.allocator().dupe(u8, args[2]);
 
-    // Use the arena allocator because the schema def is not stored with the table. The
+    // Use the tmp arena because the schema def is not stored with the table. The
     // data is converted into a Schema and the Schema is stored.
     const def = SchemaDef.parse(cb_ctx.arena, args[3..]) catch |e| {
         cb_ctx.setErrorMessage("error parsing schema definition: {any}", .{e});
         return e;
     };
 
-    try schema_mod.Db.create(cb_ctx.arena, conn, name);
-    try segment.Db.create(cb_ctx.arena, conn, name);
+    try schema_mod.Db.createTable(cb_ctx.arena, conn, name);
+    try segment.Db.createTable(cb_ctx.arena, conn, name);
     var db = .{
         .schema = schema_mod.Db.init(conn, name),
         .segment = try segment.Db.init(&table_static_arena, conn, name),
@@ -126,7 +126,7 @@ test "create table" {
             "size INTEGER NULL",
         },
     );
-    defer table.destroy();
+    defer table.destroy(&cb_ctx);
 }
 
 pub fn connect(
@@ -193,8 +193,17 @@ pub fn disconnect(self: *Self) void {
     self.table_static_arena.deinit();
 }
 
-pub fn destroy(self: *Self) void {
-    // TODO delete all data
+pub fn destroy(self: *Self, cb_ctx: *vtab.CallbackContext) void {
+    self.db.schema.dropTable(cb_ctx.arena) catch |e| {
+        std.log.err("failed to drop shadow table {s}_columns: {any}", .{self.name, e});
+    };
+    self.db.segment.dropTable(cb_ctx.arena) catch |e| {
+        std.log.err("failed to drop shadow table {s}_segments: {any}", .{self.name, e});
+    };
+    self.primary_index.drop(cb_ctx.arena) catch |e| {
+        std.log.err("failed to drop shadow table {s}_primaryindex: {any}", .{self.name, e});
+    };
+
     self.disconnect();
 }
 

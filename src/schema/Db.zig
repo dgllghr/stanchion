@@ -21,7 +21,7 @@ vtab_table_name: []const u8,
 load_columns: StmtCell,
 create_column: StmtCell,
 
-pub fn create(tmp_arena: *ArenaAllocator, conn: Conn, vtab_table_name: []const u8) !void {
+pub fn createTable(tmp_arena: *ArenaAllocator, conn: Conn, vtab_table_name: []const u8) !void {
     const query = try fmt.allocPrintZ(
         tmp_arena.allocator(),
         \\CREATE TABLE "{s}_columns" (
@@ -50,6 +50,13 @@ pub fn init(conn: Conn, vtab_table_name: []const u8) Self {
 pub fn deinit(self: *Self) void {
     self.load_columns.deinit();
     self.create_column.deinit();
+}
+
+pub fn dropTable(self: *Self, tmp_arena: *ArenaAllocator) !void {
+    const query = try fmt.allocPrintZ(tmp_arena.allocator(),
+        \\DROP TABLE "{s}_columns"
+    , .{self.vtab_table_name});
+    try self.conn.exec(query);
 }
 
 fn loadColumnsQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
@@ -133,7 +140,7 @@ test "create column" {
         .column_type = .{ .data_type = .Integer, .nullable = false },
         .sk_rank = 0,
     };
-    try Self.create(&arena, conn, "test");
+    try Self.createTable(&arena, conn, "test");
     var db = Self.init(conn, "test");
 
     try db.createColumn(arena.allocator(), &arena, &column);

@@ -391,9 +391,9 @@ pub fn VirtualTable(comptime Table: type) type {
             self.allocator.destroy(self);
         }
 
-        fn destroy(self: *Self) void {
+        fn destroy(self: *Self, cb_ctx: *CallbackContext) void {
             // TODO table.destroy and table.disconnect might need to return errors
-            self.table.destroy();
+            self.table.destroy(cb_ctx);
             self.allocator.destroy(self.table);
             self.allocator.destroy(self);
         }
@@ -554,7 +554,12 @@ pub fn VirtualTable(comptime Table: type) type {
 
         fn xDestroy(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
             const state = @fieldParentPtr(State, "vtab", vtab);
-            state.destroy();
+
+            var arena = heap.ArenaAllocator.init(state.allocator);
+            defer arena.deinit();
+            var cb_ctx = CallbackContext{ .arena = &arena };
+
+            state.destroy(&cb_ctx);
 
             return c.SQLITE_OK;
         }
@@ -575,7 +580,7 @@ pub fn VirtualTable(comptime Table: type) type {
                 @as([*c]?*c.sqlite3_value, @ptrCast(argv))[0..@intCast(argc)],
             );
             state.table.update(&cb_ctx, @ptrCast(row_id_ptr), values) catch |e| {
-                std.log.err("error calling update on table: {any}", .{e});
+                std.log.err("error calling update on vtab: {any}", .{e});
                 // TODO how to set the error message?
                 //err_str.* = dupeToSQLiteString(cb_ctx.error_message);
                 return c.SQLITE_ERROR;

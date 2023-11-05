@@ -207,6 +207,20 @@ pub fn deinit(self: *Self) void {
 }
 
 //
+// Drop
+//
+
+pub fn drop(self: *Self, tmp_arena: *ArenaAllocator) !void {
+    const query = try fmt.allocPrintZ(
+        tmp_arena.allocator(),
+        \\DROP TABLE "{s}_primaryindex"
+    ,
+        .{self.vtab_table_name},
+    );
+    try self.conn.exec(query);
+}
+
+//
 // Table state
 //
 

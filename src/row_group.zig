@@ -340,11 +340,11 @@ test "row group: round trip" {
 
     const table_name = "test";
 
-    try schema_mod.Db.create(&arena, conn, table_name);
+    try schema_mod.Db.createTable(&arena, conn, table_name);
     var schema_db = schema_mod.Db.init(conn, table_name);
     defer schema_db.deinit();
 
-    try SegmentDb.create(&arena, conn, table_name);
+    try SegmentDb.createTable(&arena, conn, table_name);
     var segment_db = try SegmentDb.init(&arena, conn, table_name);
     defer segment_db.deinit();
 
