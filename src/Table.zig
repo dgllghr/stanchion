@@ -66,13 +66,13 @@ pub fn create(
 
     // Use the tmp arena because the schema def is not stored with the table. The
     // data is converted into a Schema and the Schema is stored.
-    const def = SchemaDef.parse(cb_ctx.arena, args[3..]) catch |e| {
+    const def = SchemaDef.parse(&cb_ctx.arena, args[3..]) catch |e| {
         cb_ctx.setErrorMessage("error parsing schema definition: {any}", .{e});
         return e;
     };
 
-    try schema_mod.Db.createTable(cb_ctx.arena, conn, name);
-    try segment.Db.createTable(cb_ctx.arena, conn, name);
+    try schema_mod.Db.createTable(&cb_ctx.arena, conn, name);
+    try segment.Db.createTable(&cb_ctx.arena, conn, name);
     var db = .{
         .schema = schema_mod.Db.init(conn, name),
         .segment = try segment.Db.init(&table_static_arena, conn, name),
@@ -80,7 +80,7 @@ pub fn create(
 
     var s = Schema.create(
         table_static_arena.allocator(),
-        cb_ctx.arena,
+        &cb_ctx.arena,
         &db.schema,
         def,
     ) catch |e| {
@@ -88,7 +88,7 @@ pub fn create(
         return e;
     };
 
-    const primary_index = PrimaryIndex.create(cb_ctx.arena, conn, name, &s) catch |e| {
+    const primary_index = PrimaryIndex.create(&cb_ctx.arena, conn, name, &s) catch |e| {
         cb_ctx.setErrorMessage("error creating primary index: {any}", .{e});
         return e;
     };
@@ -107,11 +107,8 @@ test "create table" {
     const conn = try Conn.openInMemory();
     defer conn.close();
 
-    var arena = ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var cb_ctx = vtab.CallbackContext{
-        .arena = &arena,
-    };
+    var cb_ctx = vtab.CallbackContext.init(std.testing.allocator);
+    defer cb_ctx.deinit();
 
     var table = try create(
         std.testing.allocator,
@@ -155,7 +152,7 @@ pub fn connect(
 
     const s = Schema.load(
         table_static_arena.allocator(),
-        cb_ctx.arena,
+        &cb_ctx.arena,
         &db.schema,
     ) catch |e| {
         cb_ctx.setErrorMessage("error loading schema: {any}", .{e});
@@ -163,7 +160,7 @@ pub fn connect(
     };
 
     const primary_index = PrimaryIndex.open(
-        cb_ctx.arena,
+        &cb_ctx.arena,
         conn,
         name,
         &s,
@@ -191,14 +188,14 @@ pub fn disconnect(self: *Self) void {
 }
 
 pub fn destroy(self: *Self, cb_ctx: *vtab.CallbackContext) void {
-    self.db.schema.dropTable(cb_ctx.arena) catch |e| {
-        std.log.err("failed to drop shadow table {s}_columns: {any}", .{self.name, e});
+    self.db.schema.dropTable(&cb_ctx.arena) catch |e| {
+        std.log.err("failed to drop shadow table {s}_columns: {any}", .{ self.name, e });
     };
-    self.db.segment.dropTable(cb_ctx.arena) catch |e| {
-        std.log.err("failed to drop shadow table {s}_segments: {any}", .{self.name, e});
+    self.db.segment.dropTable(&cb_ctx.arena) catch |e| {
+        std.log.err("failed to drop shadow table {s}_segments: {any}", .{ self.name, e });
     };
-    self.primary_index.drop(cb_ctx.arena) catch |e| {
-        std.log.err("failed to drop shadow table {s}_primaryindex: {any}", .{self.name, e});
+    self.primary_index.drop(&cb_ctx.arena) catch |e| {
+        std.log.err("failed to drop shadow table {s}_primaryindex: {any}", .{ self.name, e });
     };
 
     self.disconnect();
@@ -219,7 +216,10 @@ pub fn update(
     change_set: ChangeSet,
 ) !void {
     if (change_set.changeType() == .Insert) {
-        rowid.* = self.primary_index.insertInsertEntry(cb_ctx.arena, change_set) catch |e| {
+        rowid.* = self.primary_index.insertInsertEntry(
+            &cb_ctx.arena,
+            change_set,
+        ) catch |e| {
             cb_ctx.setErrorMessage("failed insert insert entry: {any}", .{e});
             return e;
         };
@@ -230,13 +230,13 @@ pub fn update(
         //      inserts)
 
         var handle = try self.primary_index.precedingRowGroup(
-            cb_ctx.arena,
+            &cb_ctx.arena,
             rowid.*,
             change_set,
         );
         defer handle.deinit();
 
-        var iter = try self.primary_index.stagedInserts(cb_ctx.arena, &handle);
+        var iter = try self.primary_index.stagedInserts(&cb_ctx.arena, &handle);
         defer iter.deinit();
 
         var count: u32 = 0;
@@ -282,7 +282,7 @@ pub fn open(
 ) !Cursor {
     return Cursor.init(
         self.allocator,
-        cb_ctx.arena,
+        &cb_ctx.arena,
         &self.db.segment,
         &self.schema,
         &self.primary_index,
