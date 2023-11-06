@@ -305,7 +305,7 @@ pub fn loadNextRowid(self: *Self) !void {
     defer self.load_next_rowid.resetExec() catch {};
 
     _ = try self.load_next_rowid.next();
-    
+
     self.next_rowid = self.load_next_rowid.read(.Int64, false, 0);
     self.last_write_rowid = self.next_rowid;
 }
@@ -324,12 +324,14 @@ fn updateNextRowidDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
 }
 
 pub fn persistNextRowid(self: *Self) !void {
-    defer self.update_next_rowid.resetExec() catch {};
+    if (self.last_write_rowid != self.next_rowid) {
+        defer self.update_next_rowid.resetExec() catch {};
 
-    try self.update_next_rowid.bind(.Int64, 1, self.next_rowid);
-    try self.update_next_rowid.exec();
+        try self.update_next_rowid.bind(.Int64, 1, self.next_rowid);
+        try self.update_next_rowid.exec();
 
-    self.last_write_rowid = self.next_rowid;
+        self.last_write_rowid = self.next_rowid;
+    }
 }
 
 //
