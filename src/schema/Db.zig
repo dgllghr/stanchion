@@ -129,7 +129,6 @@ pub fn createColumn(
 
 test "create column" {
     const conn = try Conn.openInMemory();
-    try @import("../Db.zig").Migrations.apply(conn);
 
     var arena = ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

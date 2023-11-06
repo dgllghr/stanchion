@@ -6,13 +6,11 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 
 const ChangeSet = @import("sqlite3/ChangeSet.zig");
 const Conn = @import("sqlite3/Conn.zig");
+const SqliteErorr = @import("sqlite3/errors.zig").Error;
 const Stmt = @import("sqlite3/Stmt.zig");
 const vtab = @import("sqlite3/vtab.zig");
 const sqlite_c = @import("sqlite3/c.zig").c;
 const Result = vtab.Result;
-
-const DbError = @import("db.zig").Error;
-const Migrations = @import("db.zig").Migrations;
 
 const schema_mod = @import("schema.zig");
 const SchemaDef = schema_mod.SchemaDef;
@@ -39,7 +37,7 @@ primary_index: PrimaryIndex,
 pub const InitError = error{
     NoColumns,
     UnsupportedDb,
-} || SchemaDef.ParseError || Schema.Error || DbError || mem.Allocator.Error;
+} || SchemaDef.ParseError || Schema.Error || SqliteErorr || mem.Allocator.Error;
 
 pub fn create(
     allocator: Allocator,
@@ -108,7 +106,6 @@ pub fn create(
 test "create table" {
     const conn = try Conn.openInMemory();
     defer conn.close();
-    try Migrations.apply(conn);
 
     var arena = ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

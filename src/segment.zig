@@ -327,7 +327,6 @@ test "segment writer" {
 
     const conn = try @import("sqlite3/Conn.zig").openInMemory();
     defer conn.close();
-    try @import("db.zig").Migrations.apply(conn);
 
     const header = Header{
         .present_stripe = .{
@@ -581,7 +580,6 @@ test "segment reader" {
 
     const conn = try @import("sqlite3/Conn.zig").openInMemory();
     defer conn.close();
-    try @import("db.zig").Migrations.apply(conn);
 
     const header = Header{
         .present_stripe = .{

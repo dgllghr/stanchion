@@ -333,7 +333,6 @@ test "row group: round trip" {
 
     const conn = try @import("sqlite3/Conn.zig").openInMemory();
     defer conn.close();
-    try @import("db.zig").Migrations.apply(conn);
 
     var arena = ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
