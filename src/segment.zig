@@ -458,11 +458,7 @@ pub const Reader = struct {
 
     /// The value will use the supplied buffer and allocator if necessary. The buffer
     /// must be managed by the caller.
-    pub fn read(
-        self: *Self,
-        allocator: Allocator,
-        bytes_buf: *ArrayListUnmanaged(u8),
-    ) !Value {
+    pub fn read(self: *Self, allocator: Allocator) !Value {
         var present = true;
         if (self.present) |*pres_stripe| {
             present = try pres_stripe.decoder.read(pres_stripe.blob);
@@ -479,12 +475,9 @@ pub const Reader = struct {
                     var len_stripe = &self.length.?;
                     const length = try len_stripe.decoder.read(len_stripe.blob);
                     // TODO cache the length for use in `next`?
-                    try bytes_buf.resize(allocator, @intCast(length));
-                    try d.readAll(
-                        bytes_buf.items,
-                        prim_stripe.blob,
-                    );
-                    primary = .{ .bytes = bytes_buf.items };
+                    var buf = try allocator.alloc(u8, @intCast(length));
+                    try d.readAll(buf, prim_stripe.blob);
+                    primary = .{ .bytes = buf };
                 },
             }
         }
@@ -515,9 +508,8 @@ pub const Reader = struct {
 
     pub fn readInto(
         self: *Self,
-        result: anytype,
         allocator: Allocator,
-        bytes_buf: *ArrayListUnmanaged(u8),
+        result: anytype,
     ) !void {
         var present = true;
         if (self.present) |*pres_stripe| {
@@ -534,14 +526,11 @@ pub const Reader = struct {
                     var len_stripe = &self.length.?;
                     const length = try len_stripe.decoder.read(len_stripe.blob);
                     // TODO cache the length for use in `next`?
-                    try bytes_buf.resize(allocator, @intCast(length));
-                    try d.readAll(
-                        bytes_buf.items,
-                        prim_stripe.blob,
-                    );
+                    var buf = try allocator.alloc(u8, @intCast(length));
+                    try d.readAll(buf, prim_stripe.blob);
                     switch (self.data_type) {
-                        .Blob => result.setBlob(bytes_buf.items),
-                        .Text => result.setText(bytes_buf.items),
+                        .Blob => result.setBlob(buf),
+                        .Text => result.setText(buf),
                         else => unreachable,
                     }
                 },
@@ -627,7 +616,7 @@ test "segment reader" {
 
     var reader = try Reader.open(&db, .Integer, handle.id);
     for (0..10) |idx| {
-        const value = try reader.read(std.testing.allocator, &bytes_buf);
+        const value = try reader.read(std.testing.allocator);
         try std.testing.expectEqual(idx, @intCast(value.asI64()));
         try reader.next();
     }

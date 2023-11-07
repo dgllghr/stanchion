@@ -177,8 +177,7 @@ pub const Cursor = struct {
     segments: []?SegmentReader,
 
     /// Allocator used to allocate memory for values
-    value_buffer_allocator: Allocator,
-    value_buffers: []ArrayListUnmanaged(u8),
+    value_allocator: ArenaAllocator,
 
     index: u32,
 
@@ -207,10 +206,8 @@ pub const Cursor = struct {
         for (segments) |*seg| {
             seg.* = null;
         }
-        var value_buffers = try arena.allocator().alloc(ArrayListUnmanaged(u8), col_len);
-        for (value_buffers) |*buf| {
-            buf.* = ArrayListUnmanaged(u8){};
-        }
+        var value_allocator = ArenaAllocator.init(allocator);
+        errdefer value_allocator.deinit();
 
         return .{
             .static_allocator = arena,
@@ -219,8 +216,7 @@ pub const Cursor = struct {
             .row_group = row_group,
             .rowid_segment = null,
             .segments = segments,
-            .value_buffer_allocator = allocator,
-            .value_buffers = value_buffers,
+            .value_allocator = value_allocator,
             .index = 0,
         };
     }
@@ -234,9 +230,7 @@ pub const Cursor = struct {
                 s.handle.close();
             }
         }
-        for (self.value_buffers) |*buf| {
-            buf.deinit(self.value_buffer_allocator);
-        }
+        self.value_allocator.deinit();
         self.static_allocator.deinit();
     }
 
@@ -251,6 +245,9 @@ pub const Cursor = struct {
         for (self.segments) |*seg| {
             seg.* = null;
         }
+
+        // TODO make the retained capacity limit configurable
+        _ = self.value_allocator.reset(.{ .retain_with_limit = 1024 });
     }
 
     pub fn eof(self: *Self) bool {
@@ -285,7 +282,7 @@ pub const Cursor = struct {
         }
 
         var seg = &self.segments[col_idx].?;
-        return seg.read(self.value_buffer_allocator, &self.value_buffers[col_idx]);
+        return seg.read(self.value_allocator.allocator());
     }
 
     pub fn readInto(self: *Self, result: anytype, col_idx: usize) !void {
@@ -294,11 +291,7 @@ pub const Cursor = struct {
         }
 
         var seg = &self.segments[col_idx].?;
-        try seg.readInto(
-            result,
-            self.value_buffer_allocator,
-            &self.value_buffers[col_idx],
-        );
+        try seg.readInto(self.value_allocator.allocator(), result);
     }
 
     fn loadRowidSegment(self: *Self) !void {
