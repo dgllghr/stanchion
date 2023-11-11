@@ -58,6 +58,10 @@ pub const Planner = struct {
         };
     }
 
+    pub fn reset(self: *Self) void {
+        self.* = init(self.column_type);
+    }
+
     pub fn next(self: *Self, value: anytype) void {
         if (value.isNull()) {
             self.present.next(false);

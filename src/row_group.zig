@@ -23,142 +23,200 @@ const PrimaryIndex = @import("PrimaryIndex.zig");
 const RowGroupEntry = PrimaryIndex.RowGroupEntry;
 const StagedInsertsIterator = PrimaryIndex.StagedInsertsIterator;
 
-pub fn create(
-    allocator: Allocator,
-    schema: *const Schema,
-    segment_db: *SegmentDb,
-    primary_index: *PrimaryIndex,
-    records: *StagedInsertsIterator,
-) !void {
-    const sort_key_len = schema.sort_key.items.len;
-    const columns_len = schema.columns.items.len;
+pub const Creator = struct {
+    sort_key: []const usize,
+    column_segment_planners: []SegmentPlanner,
+    column_segment_writers: []SegmentWriter,
+    writers_continue: DynamicBitSetUnmanaged,
+    start_sort_key: []MemoryValue,
+    row_group_entry: RowGroupEntry,
 
-    // TODO this memory can be reused across row group creations for the same table
-    //      because the memory allocated is proportional to the table width. Move this
-    //      into a struct so it can be reused
-    // TODO or better yet, refactor the staged inserts so that they can be iterated
-    //      column-oriented and this memory does not need to be allocated at all
+    pub fn init(table_static_arena: *ArenaAllocator, schema: *const Schema) !Creator {
+        const sort_key_len = schema.sort_key.items.len;
+        const columns_len = schema.columns.items.len;
 
-    var arena = ArenaAllocator.init(allocator);
-    defer arena.deinit();
+        const allocator = table_static_arena.allocator();
 
-    var rowid_planner: SegmentPlanner = undefined;
-    var planners = try arena.allocator().alloc(SegmentPlanner, columns_len);
-    var rowid_plan: SegmentPlan = undefined;
-    var plans = try arena.allocator().alloc(SegmentPlan, columns_len);
-    var rowid_writer: SegmentWriter = undefined;
-    var writers = try arena.allocator().alloc(SegmentWriter, columns_len);
-    var rowid_continue = false;
-    var writers_continue = try DynamicBitSetUnmanaged.initEmpty(
-        arena.allocator(),
-        columns_len,
-    );
-    var start_sort_key = try arena.allocator().alloc(MemoryValue, sort_key_len);
-    var start_rowid: i64 = undefined;
-    var row_group_entry: RowGroupEntry = .{
-        .rowid_segment_id = undefined,
-        .column_segment_ids = try arena.allocator().alloc(i64, columns_len),
-        .record_count = 0,
-    };
-
-    // Plan
-
-    rowid_planner = SegmentPlanner.init(ColumnType.Rowid);
-    for (planners, schema.columns.items) |*planner, *col| {
-        planner.* = SegmentPlanner.init(col.column_type);
-    }
-
-    // Assign the start sort key and start row id using the first row
-    // TODO if this returns false it should be an error (empty row group)
-    _ = try records.next();
-    const start_rowid_value = records.readRowId();
-    start_rowid = start_rowid_value.asI64();
-    rowid_planner.next(start_rowid_value);
-    for (planners, 0..) |*planner, idx| {
-        const value = records.readValue(idx);
-        for (schema.sort_key.items, 0..) |sk_col_rank, sk_rank| {
-            if (sk_col_rank == idx) {
-                const owned_value = try MemoryValue.fromRef(arena.allocator(), value);
-                start_sort_key[sk_rank] = owned_value;
-                break;
-            }
+        var planners = try allocator.alloc(SegmentPlanner, columns_len);
+        for (planners, schema.columns.items) |*planner, *col| {
+            planner.* = SegmentPlanner.init(col.column_type);
         }
-        planner.next(value);
-    }
-    row_group_entry.record_count += 1;
 
-    while (try records.next()) {
-        rowid_planner.next(records.readRowId());
-        for (planners, 0..) |*planner, idx| {
-            planner.next(records.readValue(idx));
-        }
-        row_group_entry.record_count += 1;
-    }
+        const writers = try allocator.alloc(SegmentWriter, columns_len);
+        const writers_continue = try DynamicBitSetUnmanaged.initEmpty(
+            allocator,
+            columns_len,
+        );
 
-    rowid_plan = try rowid_planner.end();
-    for (plans, planners) |*plan, *planner| {
-        plan.* = try planner.end();
-    }
-
-    // Write
-    rowid_writer = try SegmentWriter.allocate(&arena, segment_db, rowid_plan);
-    errdefer segment_db.free(&arena, rowid_writer.handle) catch |e| {
-        std.log.err("error freeing segment blob {d}: {any}", .{ rowid_writer.handle.id, e });
-    };
-    defer rowid_writer.handle.close();
-    rowid_continue = try rowid_writer.begin();
-    var writer_idx: usize = 0;
-    errdefer for (0..writer_idx) |idx| {
-        segment_db.free(&arena, writers[idx].handle) catch |e| {
-            std.log.err("error freeing segment blob {d}: {any}", .{ writers[idx].handle.id, e });
+        const start_sort_key = try allocator.alloc(MemoryValue, sort_key_len);
+        const row_group_entry: RowGroupEntry = .{
+            .rowid_segment_id = undefined,
+            .column_segment_ids = try allocator.alloc(i64, columns_len),
+            .record_count = 0,
         };
-    };
-    defer for (0..writer_idx) |idx| {
-        writers[idx].handle.close();
-    };
-    for (writers, plans) |*writer, *plan| {
-        writer.* = try SegmentWriter.allocate(&arena, segment_db, plan.*);
-        // TODO if an error occurs here, the blob handle won't be closed because
-        //      `writer_idx` has not been incremented in this iteration
-        const cont = try writer.begin();
-        writers_continue.setValue(writer_idx, cont);
-        writer_idx += 1;
+
+        return .{
+            .sort_key = schema.sort_key.items,
+            .column_segment_planners = planners,
+            .column_segment_writers = writers,
+            .writers_continue = writers_continue,
+            .start_sort_key = start_sort_key,
+            .row_group_entry = row_group_entry,
+        };
     }
 
-    try records.restart();
-    while (try records.next()) {
-        if (rowid_continue) {
-            try rowid_writer.write(records.readRowId());
+    pub fn reset(self: *Creator) void {
+        // TODO it may be wise to 0-out the rest of the fields even if their values are
+        //      always overriden during create
+        for (self.column_segment_planners) |*p| {
+            p.reset();
         }
-        for (writers, 0..) |*writer, idx| {
-            if (writers_continue.isSet(idx)) {
-                try writer.write(records.readValue(idx));
+        self.row_group_entry.record_count = 0;
+    }
+
+    pub fn create(
+        self: *Creator,
+        tmp_arena: *ArenaAllocator,
+        segment_db: *SegmentDb,
+        primary_index: *PrimaryIndex,
+        records: *StagedInsertsIterator,
+    ) !void {
+        //
+        // Plan
+        //
+
+        // Assign the start sort key and start row id using the first row
+
+        // TODO if this returns false it should be an error (empty row group)
+        _ = try records.next();
+
+        const start_rowid_value = records.readRowId();
+        const start_rowid = start_rowid_value.asI64();
+
+        var rowid_segment_planner = SegmentPlanner.init(ColumnType.Rowid);
+        rowid_segment_planner.next(start_rowid_value);
+
+        for (self.column_segment_planners, 0..) |*planner, idx| {
+            const value = records.readValue(idx);
+            for (self.sort_key, 0..) |sk_col_rank, sk_rank| {
+                if (sk_col_rank == idx) {
+                    const mem_value = try MemoryValue.fromRef(
+                        tmp_arena.allocator(),
+                        value,
+                    );
+                    self.start_sort_key[sk_rank] = mem_value;
+                    break;
+                }
+            }
+            planner.next(value);
+        }
+
+        self.row_group_entry.record_count += 1;
+
+        // Plan the rest of the rows
+
+        while (try records.next()) {
+            rowid_segment_planner.next(records.readRowId());
+            for (self.column_segment_planners, 0..) |*planner, idx| {
+                planner.next(records.readValue(idx));
+            }
+            self.row_group_entry.record_count += 1;
+        }
+
+        //
+        // Write
+        //
+
+        // Init rowid segment writer
+
+        var rowid_segment_writer = try SegmentWriter.allocate(
+            tmp_arena,
+            segment_db,
+            try rowid_segment_planner.end(),
+        );
+        errdefer freeSegment(tmp_arena, segment_db, &rowid_segment_writer);
+        defer rowid_segment_writer.handle.close();
+        const rowid_continue = try rowid_segment_writer.begin();
+
+        // Init column segment writers
+
+        var writer_idx: usize = 0;
+        errdefer for (0..writer_idx) |idx| {
+            freeSegment(tmp_arena, segment_db, &self.column_segment_writers[idx]);
+        };
+        defer for (0..writer_idx) |idx| {
+            self.column_segment_writers[idx].handle.close();
+        };
+        for (self.column_segment_writers, 0..) |*writer, idx| {
+            writer.* = try SegmentWriter.allocate(
+                tmp_arena,
+                segment_db,
+                try self.column_segment_planners[idx].end(),
+            );
+            writer_idx += 1;
+            const cont = try writer.begin();
+            self.writers_continue.setValue(idx, cont);
+        }
+
+        // Write the data
+
+        try records.restart();
+
+        while (try records.next()) {
+            if (rowid_continue) {
+                try rowid_segment_writer.write(records.readRowId());
+            }
+            for (self.column_segment_writers, 0..) |*writer, idx| {
+                if (self.writers_continue.isSet(idx)) {
+                    try writer.write(records.readValue(idx));
+                }
             }
         }
+
+        // Finalize the writers
+
+        const rowid_handle = try rowid_segment_writer.end();
+        self.row_group_entry.rowid_segment_id = rowid_handle.id;
+        var column_segment_ids = self.row_group_entry.column_segment_ids;
+        for (self.column_segment_writers, column_segment_ids) |*writer, *seg_id| {
+            const handle = try writer.end();
+            seg_id.* = handle.id;
+        }
+
+        //
+        // Update primary index
+        //
+
+        try primary_index.deleteStagedInsertsRange(
+            tmp_arena,
+            self.start_sort_key,
+            start_rowid,
+        );
+
+        try primary_index.insertRowGroupEntry(
+            tmp_arena,
+            self.start_sort_key,
+            start_rowid,
+            &self.row_group_entry,
+        );
     }
 
-    var handle = try rowid_writer.end();
-    row_group_entry.rowid_segment_id = handle.id;
-    for (writers, 0..) |*writer, idx| {
-        handle = try writer.end();
-        row_group_entry.column_segment_ids[idx] = handle.id;
+    fn freeSegment(
+        tmp_arena: *ArenaAllocator,
+        segment_db: *SegmentDb,
+        writer: *SegmentWriter,
+    ) void {
+        segment_db.free(
+            tmp_arena,
+            writer.handle,
+        ) catch |e| {
+            std.log.err(
+                "error freeing segment blob {d}: {any}",
+                .{ writer.handle.id, e },
+            );
+        };
     }
-
-    // Update index
-
-    try primary_index.deleteStagedInsertsRange(
-        &arena,
-        start_sort_key,
-        start_rowid,
-    );
-
-    try primary_index.insertRowGroupEntry(
-        &arena,
-        start_sort_key,
-        start_rowid,
-        &row_group_entry,
-    );
-}
+};
 
 pub const Cursor = struct {
     const Self = @This();
@@ -380,7 +438,8 @@ test "row group: round trip" {
         var iter = try pidx.stagedInserts(&arena, &rg_entry_handle);
         defer iter.deinit();
 
-        try create(arena.allocator(), &schema, &segment_db, &pidx, &iter);
+        var creator = try Creator.init(&arena, &schema);
+        try creator.create(&arena, &segment_db, &pidx, &iter);
     }
 
     var cursor = try Cursor.init(arena.allocator(), &segment_db, &schema);

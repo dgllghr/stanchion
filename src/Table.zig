@@ -20,6 +20,7 @@ const segment = @import("segment.zig");
 
 const PrimaryIndex = @import("PrimaryIndex.zig");
 const row_group = @import("row_group.zig");
+const RowGroupCreator = row_group.Creator;
 
 const Self = @This();
 
@@ -33,6 +34,7 @@ db: struct {
 name: []const u8,
 schema: Schema,
 primary_index: PrimaryIndex,
+row_group_creator: RowGroupCreator,
 
 pub const InitError = error{
     NoColumns,
@@ -78,7 +80,7 @@ pub fn create(
         .segment = try segment.Db.init(&table_static_arena, conn, name),
     };
 
-    var s = Schema.create(
+    var schema = Schema.create(
         table_static_arena.allocator(),
         &cb_ctx.arena,
         &db.schema,
@@ -87,9 +89,24 @@ pub fn create(
         cb_ctx.setErrorMessage("error creating schema: {any}", .{e});
         return e;
     };
+    errdefer schema.deinit(table_static_arena.allocator());
 
-    const primary_index = PrimaryIndex.create(&cb_ctx.arena, conn, name, &s) catch |e| {
+    var primary_index = PrimaryIndex.create(
+        &cb_ctx.arena,
+        conn,
+        name,
+        &schema,
+    ) catch |e| {
         cb_ctx.setErrorMessage("error creating primary index: {any}", .{e});
+        return e;
+    };
+    errdefer primary_index.deinit();
+
+    const row_group_creator = RowGroupCreator.init(
+        &table_static_arena,
+        &schema,
+    ) catch |e| {
+        cb_ctx.setErrorMessage("error creating row group creator: {any}", .{e});
         return e;
     };
 
@@ -98,8 +115,9 @@ pub fn create(
         .table_static_arena = table_static_arena,
         .db = db,
         .name = name,
-        .schema = s,
+        .schema = schema,
         .primary_index = primary_index,
+        .row_group_creator = row_group_creator,
     };
 }
 
@@ -150,7 +168,7 @@ pub fn connect(
         .segment = try segment.Db.init(&table_static_arena, conn, name),
     };
 
-    const s = Schema.load(
+    var schema = Schema.load(
         table_static_arena.allocator(),
         &cb_ctx.arena,
         &db.schema,
@@ -158,14 +176,24 @@ pub fn connect(
         cb_ctx.setErrorMessage("error loading schema: {any}", .{e});
         return e;
     };
+    errdefer schema.deinit(table_static_arena.allocator());
 
-    const primary_index = PrimaryIndex.open(
+    var primary_index = PrimaryIndex.open(
         &cb_ctx.arena,
         conn,
         name,
-        &s,
+        &schema,
     ) catch |e| {
         cb_ctx.setErrorMessage("error opening primary index: {any}", .{e});
+        return e;
+    };
+    errdefer primary_index.deinit();
+
+    const row_group_creator = RowGroupCreator.init(
+        &table_static_arena,
+        &schema,
+    ) catch |e| {
+        cb_ctx.setErrorMessage("error creating row group creator: {any}", .{e});
         return e;
     };
 
@@ -174,8 +202,9 @@ pub fn connect(
         .table_static_arena = table_static_arena,
         .db = db,
         .name = name,
-        .schema = s,
+        .schema = schema,
         .primary_index = primary_index,
+        .row_group_creator = row_group_creator,
     };
 }
 
@@ -247,9 +276,10 @@ pub fn update(
         // TODO make this threshold configurable
         if (count > 10_000) {
             try iter.restart();
-            try row_group.create(
-                self.allocator,
-                &self.schema,
+
+            defer self.row_group_creator.reset();
+            try self.row_group_creator.create(
+                &cb_ctx.arena,
                 &self.db.segment,
                 &self.primary_index,
                 &iter,
