@@ -39,7 +39,7 @@ pub fn valuesLen(self: Self) usize {
     return self.values.len - 2;
 }
 
-pub fn readValue(self: Self, index: usize) ValueRef {
+pub fn readValue(self: Self, index: usize) !ValueRef {
     return .{
         .value = self.values[index + 2],
     };

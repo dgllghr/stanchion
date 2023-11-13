@@ -90,14 +90,14 @@ pub const Creator = struct {
         // TODO if this returns false it should be an error (empty row group)
         _ = try records.next();
 
-        const start_rowid_value = records.readRowId();
+        const start_rowid_value = try records.readRowid();
         const start_rowid = start_rowid_value.asI64();
 
         var rowid_segment_planner = SegmentPlanner.init(ColumnType.Rowid);
         rowid_segment_planner.next(start_rowid_value);
 
         for (self.column_segment_planners, 0..) |*planner, idx| {
-            const value = records.readValue(idx);
+            const value = try records.readValue(idx);
             for (self.sort_key, 0..) |sk_col_rank, sk_rank| {
                 if (sk_col_rank == idx) {
                     const mem_value = try MemoryValue.fromRef(
@@ -116,9 +116,9 @@ pub const Creator = struct {
         // Plan the rest of the rows
 
         while (try records.next()) {
-            rowid_segment_planner.next(records.readRowId());
+            rowid_segment_planner.next(try records.readRowid());
             for (self.column_segment_planners, 0..) |*planner, idx| {
-                planner.next(records.readValue(idx));
+                planner.next(try records.readValue(idx));
             }
             self.row_group_entry.record_count += 1;
         }
@@ -164,11 +164,11 @@ pub const Creator = struct {
 
         while (try records.next()) {
             if (rowid_continue) {
-                try rowid_segment_writer.write(records.readRowId());
+                try rowid_segment_writer.write(try records.readRowid());
             }
             for (self.column_segment_writers, 0..) |*writer, idx| {
                 if (self.writers_continue.isSet(idx)) {
-                    try writer.write(records.readValue(idx));
+                    try writer.write(try records.readValue(idx));
                 }
             }
         }
@@ -229,6 +229,9 @@ pub const Cursor = struct {
     static_allocator: ArenaAllocator,
 
     column_types: []ColumnType,
+
+    /// Set `row_group` before iterating. Set the record count on `row_group` to 0 to
+    /// make an empty cursor.
     row_group: RowGroupEntry,
 
     rowid_segment: ?SegmentReader,
@@ -258,7 +261,7 @@ pub const Cursor = struct {
         const row_group = .{
             .rowid_segment_id = undefined,
             .column_segment_ids = try arena.allocator().alloc(i64, col_len),
-            .record_count = undefined,
+            .record_count = 0,
         };
         var segments = try arena.allocator().alloc(?SegmentReader, col_len);
         for (segments) |*seg| {
@@ -324,17 +327,33 @@ pub const Cursor = struct {
         self.index += 1;
     }
 
-    pub fn readRowid(self: *Self) !i64 {
+    /// Does not check for eof
+    pub fn skip(self: *Self, n: u32) !void {
+        if (self.rowid_segment) |*seg| {
+            for (0..n) |_| {
+                try seg.next();
+            }
+        }
+        for (self.segments) |*seg| {
+            if (seg.*) |*s| {
+                for (0..n) |_| {
+                    try s.next();
+                }
+            }
+        }
+        self.index += n;
+    }
+
+    pub fn readRowid(self: *Self) !SegmentValue {
         if (self.rowid_segment == null) {
             try self.loadRowidSegment();
         }
 
         var seg = &self.rowid_segment.?;
-        const value = try seg.readNoAlloc();
-        return value.asI64();
+        return seg.readNoAlloc();
     }
 
-    pub fn read(self: *Self, col_idx: usize) !SegmentValue {
+    pub fn readValue(self: *Self, col_idx: usize) !SegmentValue {
         if (self.segments[col_idx] == null) {
             try self.loadSegment(col_idx);
         }
@@ -460,14 +479,14 @@ test "row group: round trip" {
     var idx: usize = 0;
     while (!cursor.eof()) {
         const rowid = try cursor.readRowid();
-        try std.testing.expectEqual(rowids[idx], rowid);
+        try std.testing.expectEqual(rowids[idx], rowid.asI64());
 
         // Rows are in sort key order not insert order. Use the expected rowid as the
         // index
         const rowIdx: usize = @as(usize, @intCast(rowids[idx])) - 1;
-        const quadrant = (try cursor.read(0)).asText();
+        const quadrant = (try cursor.readValue(0)).asText();
         try std.testing.expectEqualStrings(table_values[rowIdx][0].Text, quadrant);
-        const sector = (try cursor.read(1)).asI64();
+        const sector = (try cursor.readValue(1)).asI64();
         try std.testing.expectEqual(table_values[rowIdx][1].Integer, sector);
 
         idx += 1;

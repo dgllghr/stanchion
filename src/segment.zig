@@ -1,13 +1,18 @@
 const std = @import("std");
 const debug = std.debug;
+const math = std.math;
+const mem = std.mem;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
+const Order = math.Order;
 
 const Blob = @import("sqlite3/Blob.zig");
 const BlobSlice = Blob.BlobSlice;
+const ValueType = @import("sqlite3/value.zig").ValueType;
 
-const ColumnType = @import("schema/ColumnType.zig");
+const schema_mod = @import("schema.zig");
+const ColumnType = schema_mod.ColumnType;
 
 const stripe = @import("stripe.zig");
 const Valid = stripe.Valid;
@@ -639,6 +644,20 @@ pub const Value = struct {
     data_type: ColumnType.DataType,
     primary: ?PrimaryValue,
 
+    pub fn valueType(self: Self) ValueType {
+        if (self.isNull()) {
+            return .Null;
+        }
+
+        return switch (self.data_type) {
+            .Boolean => .Integer,
+            .Integer => .Integer,
+            .Float => .Float,
+            .Text => .Text,
+            .Blob => .Blob,
+        };
+    }
+
     pub fn isNull(self: Self) bool {
         return self.primary == null;
     }
@@ -665,5 +684,20 @@ pub const Value = struct {
 
     pub fn asText(self: Self) []const u8 {
         return self.primary.?.bytes;
+    }
+
+    pub fn compare(self: Self, other: anytype) Order {
+        // This isn't correct by the sql definition
+        if (self.isNull()) {
+            return .eq;
+        }
+
+        return switch (self.data_type) {
+            .Boolean => math.order(@intFromBool(self.asBool()), @intFromBool(other.asBool())),
+            .Integer => math.order(self.asI64(), other.asI64()),
+            .Float => math.order(self.asF64(), other.asF64()),
+            .Text => mem.order(u8, self.asText(), other.asText()),
+            .Blob => mem.order(u8, self.asBlob(), other.asBlob()),
+        };
     }
 };

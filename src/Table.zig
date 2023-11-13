@@ -421,9 +421,11 @@ pub const Cursor = struct {
 
     pub fn rowid(self: *Cursor) !i64 {
         if (self.in_row_group) {
-            return self.rg_cursor.readRowid();
+            const value = try self.rg_cursor.readRowid();
+            return value.asI64();
         }
-        return self.pidx_cursor.readRowid();
+        const value = try self.pidx_cursor.readRowid();
+        return value.asI64();
     }
 
     pub fn column(self: *Cursor, result: Result, col_idx: usize) !void {
@@ -433,7 +435,7 @@ pub const Cursor = struct {
             return;
         }
 
-        const value = self.pidx_cursor.read(col_idx);
+        const value = try self.pidx_cursor.read(col_idx);
         result.setSqliteValue(value);
     }
 };

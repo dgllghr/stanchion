@@ -486,7 +486,8 @@ pub fn precedingRowGroup(
     errdefer self.find_preceding_row_group.reset();
 
     for (self.sort_key, 1..) |col_idx, idx| {
-        try row.readValue(col_idx).bind(stmt, idx);
+        const value = try row.readValue(col_idx);
+        try value.bind(stmt, idx);
     }
     try stmt.bind(.Int64, self.sort_key.len + 1, rowid);
 
@@ -521,13 +522,15 @@ pub fn insertInsertEntry(self: *Self, tmp_arena: *ArenaAllocator, values: anytyp
     try stmt.bind(.Int64, 3, rowid);
     try stmt.bindNull(4);
     for (self.sort_key, 5..) |rank, idx| {
-        try values.readValue(rank).bind(stmt, idx);
+        const value = try values.readValue(rank);
+        try value.bind(stmt, idx);
     }
     const col_idx_start = self.sort_key.len + 5;
     // Sort key values are duplicated into both the sort key columns and the column value
     // columns
     for (0..self.columns_len, col_idx_start..) |rank, idx| {
-        try values.readValue(rank).bind(stmt, idx);
+        const value = try values.readValue(rank);
+        try value.bind(stmt, idx);
     }
 
     stmt.exec() catch |e| {
@@ -623,11 +626,20 @@ pub const StagedInsertsIterator = struct {
         return entry_type != .RowGroup;
     }
 
-    pub fn readRowId(self: *@This()) ValueRef {
+    /// Does not check for eof
+    pub fn skip(self: *@This(), n: u32) !void {
+        // TODO would it be faster to have a limit parameter in the query and restart
+        //      execution after changing the limit?
+        for (0..n) |_| {
+            _ = try self.stmt.next();
+        }
+    }
+
+    pub fn readRowid(self: *@This()) !ValueRef {
         return self.stmt.readSqliteValue(1);
     }
 
-    pub fn readValue(self: *@This(), idx: usize) ValueRef {
+    pub fn readValue(self: *@This(), idx: usize) !ValueRef {
         return self.stmt.readSqliteValue(idx + 2);
     }
 };
@@ -800,11 +812,11 @@ pub const Cursor = struct {
         }
     }
 
-    pub fn readRowid(self: @This()) i64 {
-        return self.stmt.read(.Int64, false, 1);
+    pub fn readRowid(self: @This()) !ValueRef {
+        return self.stmt.readSqliteValue(1);
     }
 
-    pub fn read(self: @This(), col_idx: usize) ValueRef {
+    pub fn read(self: @This(), col_idx: usize) !ValueRef {
         return self.stmt.readSqliteValue(col_idx + 4);
     }
 };

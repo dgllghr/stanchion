@@ -1,11 +1,16 @@
 const std = @import("std");
+const math = std.math;
+const mem = std.mem;
 const meta = std.meta;
 const Allocator = std.mem.Allocator;
+const Order = math.Order;
 
 const Stmt = @import("sqlite3/Stmt.zig");
 const sqlite_value = @import("sqlite3/value.zig");
 const ValueType = sqlite_value.ValueType;
 const ValueRef = sqlite_value.Ref;
+
+const DataType = @import("schema.zig").ColumnType.DataType;
 
 pub const MemoryValue = union(enum) {
     const Self = @This();
@@ -16,6 +21,23 @@ pub const MemoryValue = union(enum) {
     Float: f64,
     Text: []const u8,
     Blob: []const u8,
+
+    pub fn fromValue(
+        allocator: Allocator,
+        data_type: DataType,
+        value: anytype,
+    ) !Self {
+        if (value.isNull()) {
+            return .Null;
+        }
+        return switch (data_type) {
+            .Boolean => .{ .Boolean = value.asBool() },
+            .Integer => .{ .Integer = value.asI64() },
+            .Float => .{ .Float = value.asF64() },
+            .Text => .{ .Text = try allocator.dupe(u8, value.asText()) },
+            .Blob => .{ .Blob = try allocator.dupe(u8, value.asBlob()) },
+        };
+    }
 
     pub fn fromRef(allocator: Allocator, value: ValueRef) !Self {
         return switch (value.valueType()) {
@@ -73,6 +95,18 @@ pub const MemoryValue = union(enum) {
         return self.Text;
     }
 
+    pub fn compare(self: Self, other: anytype) Order {
+        switch (self) {
+            // This isn't correct by the sql definition
+            .Null => .eq,
+            .Boolean => |v| math.order(@intFromBool(v), @intFromBool(other.asBool())),
+            .Integer => |v| math.order(v, other.asI64()),
+            .Float => |v| math.order(v, other.asF64()),
+            .Text => |v| mem.order(u8, v, other.asText()),
+            .Blob => |v| mem.order(u8, v, other.asBlob()),
+        }
+    }
+
     pub fn bind(self: Self, stmt: Stmt, index: usize) !void {
         switch (self) {
             .Null => try stmt.bindNull(index),
@@ -107,7 +141,7 @@ pub const MemoryTuple = struct {
         return self.values.len;
     }
 
-    pub fn readValue(self: Self, index: usize) MemoryValue {
+    pub fn readValue(self: Self, index: usize) !MemoryValue {
         return self.values[index];
     }
 };
