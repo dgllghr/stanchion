@@ -21,7 +21,7 @@ const MemoryValue = @import("value.zig").MemoryValue;
 
 const PrimaryIndex = @import("PrimaryIndex.zig");
 const RowGroupEntry = PrimaryIndex.RowGroupEntry;
-const StagedInsertsIterator = PrimaryIndex.StagedInsertsIterator;
+const PendingInsertsIterator = PrimaryIndex.PendingInsertsIterator;
 
 pub const Creator = struct {
     sort_key: []const usize,
@@ -79,16 +79,18 @@ pub const Creator = struct {
         tmp_arena: *ArenaAllocator,
         segment_db: *SegmentDb,
         primary_index: *PrimaryIndex,
-        records: *StagedInsertsIterator,
+        records: *PendingInsertsIterator,
     ) !void {
         //
         // Plan
         //
 
-        // Assign the start sort key and start row id using the first row
+        // If there are no pending records, there is nothing to do
+        if (records.eof) {
+            return;
+        }
 
-        // TODO if this returns false it should be an error (empty row group)
-        _ = try records.next();
+        // Assign the start sort key and start row id using the first row
 
         const start_rowid_value = try records.readRowid();
         const start_rowid = start_rowid_value.asI64();
@@ -112,15 +114,17 @@ pub const Creator = struct {
         }
 
         self.row_group_entry.record_count += 1;
+        try records.next();
 
         // Plan the rest of the rows
 
-        while (try records.next()) {
+        while (!records.eof) {
             rowid_segment_planner.next(try records.readRowid());
             for (self.column_segment_planners, 0..) |*planner, idx| {
                 planner.next(try records.readValue(idx));
             }
             self.row_group_entry.record_count += 1;
+            try records.next();
         }
 
         //
@@ -162,7 +166,7 @@ pub const Creator = struct {
 
         try records.restart();
 
-        while (try records.next()) {
+        while (!records.eof) {
             if (rowid_continue) {
                 try rowid_segment_writer.write(try records.readRowid());
             }
@@ -171,6 +175,7 @@ pub const Creator = struct {
                     try writer.write(try records.readValue(idx));
                 }
             }
+            try records.next();
         }
 
         // Finalize the writers
@@ -448,33 +453,28 @@ test "row group: round trip" {
     }
 
     {
-        var rg_entry_handle = try pidx.precedingRowGroup(
+        var node = try pidx.containingNodeHandle(
             &arena,
-            1,
             MemoryTuple{ .values = &table_values[0] },
+            1,
         );
-        defer rg_entry_handle.deinit();
-        var iter = try pidx.stagedInserts(&arena, &rg_entry_handle);
-        defer iter.deinit();
+        defer node.deinit();
+
+        var iter = try node.pendingInserts(&arena);
 
         var creator = try Creator.init(&arena, &schema);
-        try creator.create(&arena, &segment_db, &pidx, &iter);
+        try creator.create(&arena, &segment_db, &pidx, iter);
     }
 
     var cursor = try Cursor.init(arena.allocator(), &segment_db, &schema);
-    var rg_entry_handle = try pidx.precedingRowGroup(
+    var node = try pidx.containingNodeHandle(
         &arena,
-        1,
         MemoryTuple{ .values = &table_values[0] },
+        1,
     );
-    defer rg_entry_handle.deinit();
-    const row_group = rg_entry_handle.row_group;
-    try pidx.readRowGroupEntry(
-        &arena,
-        cursor.rowGroup(),
-        row_group.sortKey(),
-        row_group.rowid,
-    );
+    defer node.deinit();
+    try node.readEntryInto(cursor.rowGroup());
+    try std.testing.expect(cursor.rowGroup().record_count > 0);
 
     var idx: usize = 0;
     while (!cursor.eof()) {

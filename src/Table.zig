@@ -258,18 +258,18 @@ pub fn update(
         // TODO do this at end of transaction (requires tracking which row groups got
         //      inserts)
 
-        var handle = try self.primary_index.precedingRowGroup(
+        var node = try self.primary_index.containingNodeHandle(
             &cb_ctx.arena,
-            rowid.*,
             change_set,
+            rowid.*,
         );
-        defer handle.deinit();
+        defer node.deinit();
 
-        var iter = try self.primary_index.stagedInserts(&cb_ctx.arena, &handle);
-        defer iter.deinit();
+        var iter = try node.pendingInserts(&cb_ctx.arena);
 
         var count: u32 = 0;
-        while (try iter.next()) {
+        while (!iter.eof) {
+            try iter.next();
             count += 1;
         }
 
@@ -282,7 +282,7 @@ pub fn update(
                 &cb_ctx.arena,
                 &self.db.segment,
                 &self.primary_index,
-                &iter,
+                iter,
             );
         }
 
