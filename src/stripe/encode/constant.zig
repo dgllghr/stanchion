@@ -132,7 +132,7 @@ test "decoder" {
     const expected_value: u32 = 29;
     mem.writeIntLittle(u32, buf[0..4], expected_value);
 
-    var blob = MemoryBlob{ .data = buf };
+    const blob = MemoryBlob{ .data = buf };
     var decoder = Decoder(u32, readU32).init();
     try decoder.begin(blob);
 

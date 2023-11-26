@@ -142,7 +142,7 @@ test "parse data type" {
 
     for (inputs) |input| {
         var r = Reader.init(input[1]);
-        var dt = try parseDataType(&r);
+        const dt = try parseDataType(&r);
         try testing.expectEqual(input[0], dt);
     }
 }
@@ -363,7 +363,7 @@ test "parse identifier" {
 
     for (inputs) |input| {
         var r = Reader.init(input[1]);
-        var id = try parseIdentifier(arena.allocator(), &r);
+        const id = try parseIdentifier(arena.allocator(), &r);
         try testing.expectEqualSlices(u8, input[0], id);
     }
 }

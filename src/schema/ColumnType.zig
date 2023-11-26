@@ -115,7 +115,7 @@ pub const SqliteFormatter = struct {
 };
 
 pub fn read(canonical: []const u8) Self {
-    var split = mem.indexOfScalar(u8, canonical, ' ').?;
+    const split = mem.indexOfScalar(u8, canonical, ' ').?;
     const data_type = DataType.read(canonical[0..split]);
     const rest = canonical[(split + 1)..];
     var nullable = true;

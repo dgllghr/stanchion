@@ -38,7 +38,7 @@ pub fn deinit(self: Self) void {
 
 /// Restarts the executation of the statement with the same parameters
 pub fn resetExec(self: Self) !void {
-    var res = c.sqlite3_reset(self.stmt);
+    const res = c.sqlite3_reset(self.stmt);
     if (res != c.SQLITE_OK) {
         return errors.errorFromResultCode(res);
     }
@@ -46,7 +46,7 @@ pub fn resetExec(self: Self) !void {
 
 /// Clears all paramters bound to this statement
 pub fn clearBoundParams(self: Self) !void {
-    var res = c.sqlite3_clear_bindings(self.stmt);
+    const res = c.sqlite3_clear_bindings(self.stmt);
     if (res != c.SQLITE_OK) {
         return errors.errorFromResultCode(res);
     }
@@ -113,7 +113,7 @@ pub fn exec(self: Self) !void {
 }
 
 pub fn next(self: Self) !bool {
-    var res = c.sqlite3_step(self.stmt);
+    const res = c.sqlite3_step(self.stmt);
     if (res == c.SQLITE_DONE) {
         return false;
     }

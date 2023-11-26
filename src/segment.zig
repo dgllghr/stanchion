@@ -484,7 +484,7 @@ pub const Reader = struct {
                     var len_stripe = &self.length.?;
                     const length = try len_stripe.decoder.read(len_stripe.blob);
                     // TODO cache the length for use in `next`?
-                    var buf = try allocator.alloc(u8, @intCast(length));
+                    const buf = try allocator.alloc(u8, @intCast(length));
                     try d.readAll(buf, prim_stripe.blob);
                     primary = .{ .bytes = buf };
                 },
@@ -535,7 +535,7 @@ pub const Reader = struct {
                     var len_stripe = &self.length.?;
                     const length = try len_stripe.decoder.read(len_stripe.blob);
                     // TODO cache the length for use in `next`?
-                    var buf = try allocator.alloc(u8, @intCast(length));
+                    const buf = try allocator.alloc(u8, @intCast(length));
                     try d.readAll(buf, prim_stripe.blob);
                     switch (self.data_type) {
                         .Blob => result.setBlob(buf),

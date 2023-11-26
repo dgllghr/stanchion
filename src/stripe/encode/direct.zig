@@ -126,16 +126,16 @@ test "decoder" {
         2007,
     };
     for (expected_values, 0..) |v, idx| {
-        var slice = @as(*[4]u8, @ptrCast(buf[(idx * 4)..(idx * 4 + 4)].ptr));
+        const slice = @as(*[4]u8, @ptrCast(buf[(idx * 4)..(idx * 4 + 4)].ptr));
         mem.writeIntLittle(u32, slice, v);
     }
 
-    var blob = MemoryBlob{ .data = buf };
+    const blob = MemoryBlob{ .data = buf };
     var decoder = Decoder(u32, readU32).init();
     try decoder.begin(blob);
 
     for (expected_values) |v| {
-        var value = try decoder.read(blob);
+        const value = try decoder.read(blob);
         try std.testing.expectEqual(v, value);
         decoder.next(1);
     }
