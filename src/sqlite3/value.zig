@@ -1,3 +1,5 @@
+const std = @import("std");
+
 const c = @import("c.zig").c;
 const Stmt = @import("Stmt.zig");
 
@@ -58,5 +60,20 @@ pub const Ref = struct {
 
     pub fn bind(self: Self, stmt: Stmt, index: usize) !void {
         try stmt.bindSqliteValue(index, self);
+    }
+
+    pub fn format(
+        self: Self,
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (self.valueType()) {
+            .Null => try writer.print("NULL", .{}),
+            .Integer => try writer.print("{d}", .{self.asI64()}),
+            .Float => try writer.print("{d}", .{self.asF64()}),
+            .Text => try writer.print("{s}", .{self.asText()}),
+            .Blob => try writer.print("{s}", .{self.asBlob()}),
+        }
     }
 };

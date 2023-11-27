@@ -71,7 +71,7 @@ pub const Encoder = struct {
         self.bit_index += 1;
         if (self.bit_index >= @bitSizeOf(Word)) {
             var buf: [@sizeOf(Word)]u8 = undefined;
-            mem.writeIntLittle(Word, &buf, self.word);
+            mem.writeInt(Word, &buf, self.word, .little);
             try blob.writeAt(&buf, self.word_index * @sizeOf(Word));
             self.word = 0;
             self.bit_index = 0;
@@ -82,7 +82,7 @@ pub const Encoder = struct {
     pub fn end(self: *Self, blob: anytype) !void {
         if (self.bit_index > 0) {
             var buf: [@sizeOf(Word)]u8 = undefined;
-            mem.writeIntLittle(Word, &buf, self.word);
+            mem.writeInt(Word, &buf, self.word, .little);
             try blob.writeAt(&buf, self.word_index * @sizeOf(Word));
         }
     }
@@ -132,7 +132,7 @@ pub const Decoder = struct {
         var buf: [@sizeOf(Word)]u8 = undefined;
         const byte_index = word_index * @sizeOf(Word);
         try blob.readAt(buf[0..], byte_index);
-        self.current_word = mem.readIntLittle(Word, &buf);
+        self.current_word = mem.readInt(Word, &buf, .little);
     }
 };
 
@@ -144,9 +144,9 @@ test "decoder" {
     defer allocator.free(buf);
 
     const expected_value: u32 = 29;
-    mem.writeIntLittle(u32, buf[0..4], expected_value);
+    mem.writeInt(u32, buf[0..4], expected_value, .little);
 
-    var blob = MemoryBlob{ .data = buf };
+    const blob = MemoryBlob{ .data = buf };
     var decoder = Decoder.init();
     try decoder.begin(blob);
 

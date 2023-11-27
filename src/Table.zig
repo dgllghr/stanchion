@@ -42,11 +42,12 @@ pub const InitError = error{
 } || SchemaDef.ParseError || Schema.Error || SqliteErorr || mem.Allocator.Error;
 
 pub fn create(
+    self: *Self,
     allocator: Allocator,
     conn: Conn,
     cb_ctx: *vtab.CallbackContext,
     args: []const []const u8,
-) InitError!Self {
+) InitError!void {
     if (args.len < 5) {
         cb_ctx.setErrorMessage("table must have at least 1 column", .{});
         return InitError.NoColumns;
@@ -61,63 +62,58 @@ pub fn create(
         return InitError.UnsupportedDb;
     }
 
-    var table_static_arena = ArenaAllocator.init(allocator);
-    errdefer table_static_arena.deinit();
-
-    const name = try table_static_arena.allocator().dupe(u8, args[2]);
-
     // Use the tmp arena because the schema def is not stored with the table. The
     // data is converted into a Schema and the Schema is stored.
-    const def = SchemaDef.parse(&cb_ctx.arena, args[3..]) catch |e| {
+    const def = SchemaDef.parse(cb_ctx.arena, args[3..]) catch |e| {
         cb_ctx.setErrorMessage("error parsing schema definition: {any}", .{e});
         return e;
     };
 
-    try schema_mod.Db.createTable(&cb_ctx.arena, conn, name);
-    try segment.Db.createTable(&cb_ctx.arena, conn, name);
-    var db = .{
-        .schema = schema_mod.Db.init(conn, name),
-        .segment = try segment.Db.init(&table_static_arena, conn, name),
+    self.allocator = allocator;
+    self.table_static_arena = ArenaAllocator.init(allocator);
+    errdefer self.table_static_arena.deinit();
+
+    self.name = try self.table_static_arena.allocator().dupe(u8, args[2]);
+
+    try schema_mod.Db.createTable(cb_ctx.arena, conn, self.name);
+    try segment.Db.createTable(cb_ctx.arena, conn, self.name);
+    self.db = .{
+        .schema = schema_mod.Db.init(conn, self.name),
+        .segment = try segment.Db.init(&self.table_static_arena, conn, self.name),
     };
 
-    var schema = Schema.create(
-        table_static_arena.allocator(),
-        &cb_ctx.arena,
-        &db.schema,
+    self.schema = Schema.create(
+        self.table_static_arena.allocator(),
+        cb_ctx.arena,
+        &self.db.schema,
         def,
     ) catch |e| {
         cb_ctx.setErrorMessage("error creating schema: {any}", .{e});
         return e;
     };
-    errdefer schema.deinit(table_static_arena.allocator());
+    errdefer self.schema.deinit(self.table_static_arena.allocator());
 
-    var primary_index = PrimaryIndex.create(
-        &cb_ctx.arena,
+    self.primary_index = PrimaryIndex.create(
+        cb_ctx.arena,
         conn,
-        name,
-        &schema,
+        self.name,
+        &self.schema,
     ) catch |e| {
         cb_ctx.setErrorMessage("error creating primary index: {any}", .{e});
         return e;
     };
-    errdefer primary_index.deinit();
+    errdefer self.primary_index.deinit();
 
-    const row_group_creator = RowGroupCreator.init(
-        &table_static_arena,
-        &schema,
+    self.row_group_creator = RowGroupCreator.init(
+        allocator,
+        &self.table_static_arena,
+        &self.db.segment,
+        &self.schema,
+        &self.primary_index,
+        10_000,
     ) catch |e| {
         cb_ctx.setErrorMessage("error creating row group creator: {any}", .{e});
         return e;
-    };
-
-    return .{
-        .allocator = allocator,
-        .table_static_arena = table_static_arena,
-        .db = db,
-        .name = name,
-        .schema = schema,
-        .primary_index = primary_index,
-        .row_group_creator = row_group_creator,
     };
 }
 
@@ -125,10 +121,13 @@ test "create table" {
     const conn = try Conn.openInMemory();
     defer conn.close();
 
-    var cb_ctx = vtab.CallbackContext.init(std.testing.allocator);
-    defer cb_ctx.deinit();
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
 
-    var table = try create(
+    var cb_ctx = vtab.CallbackContext.init(&arena);
+
+    var table = try cb_ctx.arena.allocator().create(Self);
+    try table.create(
         std.testing.allocator,
         conn,
         &cb_ctx,
@@ -142,11 +141,12 @@ test "create table" {
 }
 
 pub fn connect(
+    self: *Self,
     allocator: Allocator,
     conn: Conn,
     cb_ctx: *vtab.CallbackContext,
     args: []const []const u8,
-) !Self {
+) InitError!void {
     if (args.len < 3) {
         cb_ctx.setErrorMessage("invalid arguments to vtab `connect`", .{});
         return InitError.NoColumns;
@@ -158,58 +158,55 @@ pub fn connect(
         return InitError.UnsupportedDb;
     }
 
-    var table_static_arena = ArenaAllocator.init(allocator);
-    errdefer table_static_arena.deinit();
+    self.allocator = allocator;
+    self.table_static_arena = ArenaAllocator.init(allocator);
+    errdefer self.table_static_arena.deinit();
 
-    const name = try table_static_arena.allocator().dupe(u8, args[2]);
+    self.name = try self.table_static_arena.allocator().dupe(u8, args[2]);
 
-    var db = .{
-        .schema = schema_mod.Db.init(conn, name),
-        .segment = try segment.Db.init(&table_static_arena, conn, name),
+    self.db = .{
+        .schema = schema_mod.Db.init(conn, self.name),
+        .segment = try segment.Db.init(&self.table_static_arena, conn, self.name),
     };
 
-    var schema = Schema.load(
-        table_static_arena.allocator(),
-        &cb_ctx.arena,
-        &db.schema,
+    self.schema = Schema.load(
+        self.table_static_arena.allocator(),
+        cb_ctx.arena,
+        &self.db.schema,
     ) catch |e| {
         cb_ctx.setErrorMessage("error loading schema: {any}", .{e});
         return e;
     };
-    errdefer schema.deinit(table_static_arena.allocator());
+    errdefer self.schema.deinit(self.table_static_arena.allocator());
 
-    var primary_index = PrimaryIndex.open(
-        &cb_ctx.arena,
+    self.primary_index = PrimaryIndex.open(
+        cb_ctx.arena,
         conn,
-        name,
-        &schema,
+        self.name,
+        &self.schema,
     ) catch |e| {
         cb_ctx.setErrorMessage("error opening primary index: {any}", .{e});
         return e;
     };
-    errdefer primary_index.deinit();
+    errdefer self.primary_index.deinit();
 
-    const row_group_creator = RowGroupCreator.init(
-        &table_static_arena,
-        &schema,
+    self.row_group_creator = RowGroupCreator.init(
+        allocator,
+        &self.table_static_arena,
+        &self.db.segment,
+        &self.schema,
+        &self.primary_index,
+        10_000,
     ) catch |e| {
         cb_ctx.setErrorMessage("error creating row group creator: {any}", .{e});
         return e;
     };
-
-    return .{
-        .allocator = allocator,
-        .table_static_arena = table_static_arena,
-        .db = db,
-        .name = name,
-        .schema = schema,
-        .primary_index = primary_index,
-        .row_group_creator = row_group_creator,
-    };
 }
 
 pub fn disconnect(self: *Self) void {
+    self.row_group_creator.deinit();
     self.primary_index.deinit();
+
     self.db.segment.deinit();
     self.db.schema.deinit();
 
@@ -217,13 +214,13 @@ pub fn disconnect(self: *Self) void {
 }
 
 pub fn destroy(self: *Self, cb_ctx: *vtab.CallbackContext) void {
-    self.db.schema.dropTable(&cb_ctx.arena) catch |e| {
+    self.db.schema.dropTable(cb_ctx.arena) catch |e| {
         std.log.err("failed to drop shadow table {s}_columns: {any}", .{ self.name, e });
     };
-    self.db.segment.dropTable(&cb_ctx.arena) catch |e| {
+    self.db.segment.dropTable(cb_ctx.arena) catch |e| {
         std.log.err("failed to drop shadow table {s}_segments: {any}", .{ self.name, e });
     };
-    self.primary_index.drop(&cb_ctx.arena) catch |e| {
+    self.primary_index.drop(cb_ctx.arena) catch |e| {
         std.log.err("failed to drop shadow table {s}_primaryindex: {any}", .{ self.name, e });
     };
 
@@ -246,45 +243,25 @@ pub fn update(
 ) !void {
     if (change_set.changeType() == .Insert) {
         rowid.* = self.primary_index.insertInsertEntry(
-            &cb_ctx.arena,
+            cb_ctx.arena,
             change_set,
         ) catch |e| {
             cb_ctx.setErrorMessage("failed insert insert entry: {any}", .{e});
             return e;
         };
 
-        // Count the number of pending inserts for a row group and merge them if the
-        // count is above a threshold
-        // TODO do this at end of transaction (requires tracking which row groups got
+        // TODO do the following at end of transaction (requires tracking which row groups got
         //      inserts)
 
         var node = try self.primary_index.containingNodeHandle(
-            &cb_ctx.arena,
+            cb_ctx.arena,
             change_set,
             rowid.*,
         );
         defer node.deinit();
 
-        var iter = try node.pendingInserts(&cb_ctx.arena);
-
-        var count: u32 = 0;
-        while (!iter.eof) {
-            try iter.next();
-            count += 1;
-        }
-
-        // TODO make this threshold configurable
-        if (count > 10_000) {
-            try iter.restart();
-
-            defer self.row_group_creator.reset();
-            try self.row_group_creator.create(
-                &cb_ctx.arena,
-                &self.db.segment,
-                &self.primary_index,
-                iter,
-            );
-        }
+        defer self.row_group_creator.reset();
+        _ = try self.row_group_creator.createN(cb_ctx.arena, node, 1);
 
         return;
     }
@@ -312,7 +289,7 @@ pub fn open(
 ) !Cursor {
     return Cursor.init(
         self.allocator,
-        &cb_ctx.arena,
+        cb_ctx.arena,
         &self.db.segment,
         &self.schema,
         &self.primary_index,

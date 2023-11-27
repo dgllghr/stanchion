@@ -43,7 +43,7 @@ pub fn read(blob: anytype) !Self {
 
 fn readStripeMeta(buf: []const u8) StripeMeta {
     return .{
-        .byte_len = mem.readIntLittle(u32, buf[0..4]),
+        .byte_len = mem.readInt(u32, buf[0..4], .little),
         .encoding = @enumFromInt(buf[4]),
     };
 }
@@ -59,7 +59,7 @@ pub fn write(self: Self, blob: anytype) !void {
 }
 
 fn writeStripeMeta(meta: StripeMeta, buf: []u8) void {
-    mem.writeIntLittle(u32, buf[0..4], meta.byte_len);
+    mem.writeInt(u32, buf[0..4], meta.byte_len, .little);
     buf[4] = @intFromEnum(meta.encoding);
 }
 

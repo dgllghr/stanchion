@@ -127,7 +127,7 @@ test "decoder" {
     };
     for (expected_values, 0..) |v, idx| {
         const slice = @as(*[4]u8, @ptrCast(buf[(idx * 4)..(idx * 4 + 4)].ptr));
-        mem.writeIntLittle(u32, slice, v);
+        mem.writeInt(u32, slice, v, .little);
     }
 
     const blob = MemoryBlob{ .data = buf };
@@ -151,11 +151,11 @@ test "decoder" {
 }
 
 fn readU32(buf: *const [4]u8) u32 {
-    return mem.readIntLittle(u32, buf);
+    return mem.readInt(u32, buf, .little);
 }
 
 fn writeU32(value: u32) [4]u8 {
     var buf: [4]u8 = undefined;
-    mem.writeIntLittle(u32, &buf, value);
+    mem.writeInt(u32, &buf, value, .little);
     return buf;
 }

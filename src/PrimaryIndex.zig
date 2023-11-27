@@ -39,17 +39,19 @@ const Schema = s.Schema;
 const segment = @import("segment.zig");
 const SegmentDb = segment.Db;
 
+const entries = @import("primary_index/entries.zig");
 const node = @import("primary_index/node.zig");
 const pending_inserts = @import("primary_index/pending_inserts.zig");
 const sql_fmt = @import("primary_index/sql_fmt.zig");
 const ColumnListFormatter = sql_fmt.ColumnListFormatter;
 const Ctx = @import("primary_index/Ctx.zig");
+const Entries = entries.Entries;
 const EntryType = @import("primary_index/entry_type.zig").EntryType;
 const ParameterListFormatter = sql_fmt.ParameterListFormatter;
 pub const Nodes = node.Nodes;
 pub const NodeHandle = node.NodeHandle;
 pub const PendingInsertsIterator = pending_inserts.Iterator;
-pub const RowGroupEntry = @import("primary_index/row_group_entry.zig").Entry;
+pub const RowGroupEntry = @import("primary_index/entries.zig").RowGroupEntry;
 
 const StmtCell = stmt_cell.StmtCell(Ctx);
 
@@ -60,11 +62,10 @@ ctx: Ctx,
 next_rowid: i64,
 last_write_rowid: i64,
 
+entries: Entries,
 nodes: Nodes,
 
 insert_entry: StmtCell,
-
-delete_staged_inserts_range: StmtCell,
 entries_iterator: StmtCell,
 
 load_next_rowid: Stmt,
@@ -94,9 +95,9 @@ pub fn create(
         .ctx = Ctx.init(conn, vtab_table_name, schema),
         .next_rowid = 1,
         .last_write_rowid = 1,
+        .entries = Entries.init(),
         .nodes = Nodes.init(),
         .insert_entry = StmtCell.init(&insertEntryDml),
-        .delete_staged_inserts_range = StmtCell.init(&deleteInsertsRangeDml),
         .entries_iterator = StmtCell.init(&entriesIteratorQuery),
         .load_next_rowid = undefined,
         .update_next_rowid = undefined,
@@ -170,9 +171,9 @@ pub fn open(
         // Initialized below
         .next_rowid = 0,
         .last_write_rowid = 0,
+        .entries = Entries.init(),
         .nodes = Nodes.init(),
         .insert_entry = StmtCell.init(&insertEntryDml),
-        .delete_staged_inserts_range = StmtCell.init(&deleteInsertsRangeDml),
         .entries_iterator = StmtCell.init(&entriesIteratorQuery),
         .load_next_rowid = undefined,
         .update_next_rowid = undefined,
@@ -191,9 +192,9 @@ pub fn open(
 /// Must be called before memory is freed by the `static_arena` provided to `create` or
 /// `open`
 pub fn deinit(self: *Self) void {
-    self.insert_entry.deinit();
     self.nodes.deinit();
-    self.delete_staged_inserts_range.deinit();
+    self.entries.deinit();
+    self.insert_entry.deinit();
     self.entries_iterator.deinit();
     self.load_next_rowid.deinit();
     self.update_next_rowid.deinit();
@@ -320,6 +321,37 @@ pub fn persistNextRowid(self: *Self) !void {
 }
 
 //
+// Entries
+//
+
+pub fn deleteRange(
+    self: *Self,
+    tmp_arena: *ArenaAllocator,
+    start_sort_key: anytype,
+    start_rowid: i64,
+    end_sort_key: anytype,
+    end_rowid: i64,
+) !void {
+    try self.entries.deleteRange(
+        tmp_arena,
+        &self.ctx,
+        start_sort_key,
+        start_rowid,
+        end_sort_key,
+        end_rowid,
+    );
+}
+
+pub fn deleteRangeFrom(
+    self: *Self,
+    tmp_arena: *ArenaAllocator,
+    start_sort_key: anytype,
+    start_rowid: i64,
+) !void {
+    try self.entries.deleteRangeFrom(tmp_arena, &self.ctx, start_sort_key, start_rowid);
+}
+
+//
 // Row group entry
 //
 
@@ -356,10 +388,10 @@ pub fn insertRowGroupEntry(
 // Nodes
 //
 
-
-/// Finds the row group that precedes the provided row based on the sort key and rowid.
-/// The returned handle  can be used to iterate the insert entries following the row
-/// group and must be deinitialized by the caller after use.
+/// Finds the node that contains the provided sort key and rowid. The returned handle can be used
+/// to read the node head and iterate the pending inserts in the node. Only one `NodeHandle` can be
+/// in use at a time. Deinitialize the `NodeHandle` from the previous call before calling this
+/// function again.
 pub fn containingNodeHandle(
     self: *Self,
     tmp_arena: *ArenaAllocator,
@@ -460,71 +492,6 @@ test "primary index: insert staged insert" {
     });
 }
 
-fn deleteInsertsRangeDml(ctx: *const Ctx, arena: *ArenaAllocator) ![]const u8 {
-    return fmt.allocPrintZ(arena.allocator(),
-        \\WITH end_rg_entry AS (
-        \\  SELECT {s}, rowid
-        \\  FROM "{s}_primaryindex"
-        \\  WHERE ({s}, rowid) > ({s}, ?) AND entry_type = {d}
-        \\  ORDER BY {s}, rowid ASC
-        \\  LIMIT 1
-        \\)
-        \\DELETE FROM "{s}_primaryindex"
-        \\WHERE ({s}, rowid) IN (
-        \\  SELECT {s}, pidx.rowid
-        \\  FROM "{s}_primaryindex" pidx
-        \\  LEFT JOIN end_rg_entry e
-        \\  WHERE ({s}, pidx.rowid) >= ({s}, ?) AND pidx.entry_type = {d}
-        \\        AND (e.rowid IS NULL OR ({s}, pidx.rowid) < ({s}, e.rowid)))
-    , .{
-        // CTE
-        ColumnListFormatter("sk_value_{d}"){ .len = ctx.sort_key.len },
-        ctx.vtab_table_name,
-        ColumnListFormatter("sk_value_{d}"){ .len = ctx.sort_key.len },
-        ParameterListFormatter{ .len = ctx.sort_key.len },
-        @intFromEnum(EntryType.RowGroup),
-        ColumnListFormatter("sk_value_{d} ASC"){ .len = ctx.sort_key.len },
-        // Delete
-        ctx.vtab_table_name,
-        ColumnListFormatter("sk_value_{d}"){ .len = ctx.sort_key.len },
-        // Subquery
-        ColumnListFormatter("pidx.sk_value_{d}"){ .len = ctx.sort_key.len },
-        ctx.vtab_table_name,
-        ColumnListFormatter("pidx.sk_value_{d}"){ .len = ctx.sort_key.len },
-        ParameterListFormatter{ .len = ctx.sort_key.len },
-        @intFromEnum(EntryType.Insert),
-        ColumnListFormatter("pidx.sk_value_{d}"){ .len = ctx.sort_key.len },
-        ColumnListFormatter("e.sk_value_{d}"){ .len = ctx.sort_key.len },
-    });
-}
-
-/// Deletes all staged inserts with sort key >= (`start_sort_key`..., `rowid`) and < the
-/// next row group entry in the table (or the end of the table)
-pub fn deleteStagedInsertsRange(
-    self: *Self,
-    tmp_arena: *ArenaAllocator,
-    start_sort_key: anytype,
-    start_rowid: i64,
-) !void {
-    const stmt = try self.delete_staged_inserts_range.getStmt(tmp_arena, &self.ctx);
-    defer self.delete_staged_inserts_range.reset();
-
-    for (start_sort_key, 1..) |sk_value, idx| {
-        try sk_value.bind(stmt, idx);
-    }
-    try stmt.bind(.Int64, start_sort_key.len + 1, start_rowid);
-    for (start_sort_key, (start_sort_key.len + 2)..) |sk_value, idx| {
-        try sk_value.bind(stmt, idx);
-    }
-    try stmt.bind(.Int64, (start_sort_key.len * 2) + 2, start_rowid);
-
-    stmt.exec() catch |e| {
-        const err_msg = sqlite_c.sqlite3_errmsg(self.ctx.conn.conn);
-        std.log.err("error deleting inserts: {s}", .{err_msg});
-        return e;
-    };
-}
-
 //
 // Cursor
 //
@@ -604,4 +571,3 @@ fn insertEntryDml(ctx: *const Ctx, arena: *ArenaAllocator) ![]const u8 {
         ParameterListFormatter{ .len = ctx.columns_len + ctx.sort_key.len },
     });
 }
-

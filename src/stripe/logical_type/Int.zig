@@ -96,11 +96,11 @@ pub const Decoder = union(Tag) {
 };
 
 pub fn readDirect(v: *const [8]u8) i64 {
-    return std.mem.readIntLittle(i64, v);
+    return std.mem.readInt(i64, v, .little);
 }
 
 pub fn writeDirect(v: i64) [8]u8 {
     var buf: [8]u8 = undefined;
-    std.mem.writeIntLittle(i64, &buf, v);
+    std.mem.writeInt(i64, &buf, v, .little);
     return buf;
 }

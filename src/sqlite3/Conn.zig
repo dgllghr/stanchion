@@ -36,7 +36,14 @@ pub fn close(self: Self) void {
 
 pub fn prepare(self: Self, sql: []const u8) !Stmt {
     var stmt: ?*c.sqlite3_stmt = null;
-    const res = c.sqlite3_prepare_v2(self.conn, sql.ptr, @intCast(sql.len), &stmt, null);
+    const res = c.sqlite3_prepare_v3(
+        self.conn,
+        sql.ptr,
+        @intCast(sql.len),
+        c.SQLITE_PREPARE_PERSISTENT,
+        &stmt,
+        null,
+    );
     if (res != c.SQLITE_OK) {
         return errors.errorFromResultCode(res);
     }

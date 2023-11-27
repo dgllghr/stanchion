@@ -98,13 +98,13 @@ pub const Decoder = union(Tag) {
 };
 
 pub fn readDirect(v: *const [8]u8) f64 {
-    const int_value = std.mem.readIntLittle(u64, v);
+    const int_value = std.mem.readInt(u64, v, .little);
     return @bitCast(int_value);
 }
 
 pub fn writeDirect(v: f64) [8]u8 {
     const int_value: u64 = @bitCast(v);
     var buf: [8]u8 = undefined;
-    std.mem.writeIntLittle(u64, &buf, int_value);
+    std.mem.writeInt(u64, &buf, int_value, .little);
     return buf;
 }
