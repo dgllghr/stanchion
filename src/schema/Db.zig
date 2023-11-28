@@ -140,5 +140,5 @@ test "create column" {
     try Self.createTable(&arena, conn, "test");
     var db = Self.init(conn, "test");
 
-    try db.createColumn(arena.allocator(), &arena, &column);
+    try db.createColumn(&arena, &column);
 }

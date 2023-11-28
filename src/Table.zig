@@ -81,6 +81,8 @@ pub fn create(
         .schema = schema_mod.Db.init(conn, self.name),
         .segment = try segment.Db.init(&self.table_static_arena, conn, self.name),
     };
+    errdefer self.db.segment.deinit();
+    errdefer self.db.schema.deinit();
 
     self.schema = Schema.create(
         &self.table_static_arena,
@@ -167,6 +169,8 @@ pub fn connect(
         .schema = schema_mod.Db.init(conn, self.name),
         .segment = try segment.Db.init(&self.table_static_arena, conn, self.name),
     };
+    errdefer self.db.segment.deinit();
+    errdefer self.db.schema.deinit();
 
     self.schema = Schema.load(
         &self.table_static_arena,

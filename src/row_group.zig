@@ -758,7 +758,7 @@ test "row group: round trip" {
         "size INTEGER NOT NULL",
         "SORT KEY (quadrant, sector)",
     });
-    const schema = try Schema.create(arena.allocator(), &arena, &schema_db, schema_def);
+    const schema = try Schema.create(&arena, &arena, &schema_db, schema_def);
 
     var pidx = try PrimaryIndex.create(&arena, conn, table_name, &schema);
 
@@ -791,6 +791,7 @@ test "row group: round trip" {
         defer node.deinit();
 
         var creator = try Creator.init(std.testing.allocator, &arena, &segment_db, &schema, &pidx, 4);
+        defer creator.deinit();
         const n = try creator.createN(&arena, node, 1);
         try std.testing.expectEqual(@as(usize, 1), n);
     }
