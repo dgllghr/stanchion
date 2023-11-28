@@ -110,7 +110,6 @@ fn createColumnDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
 
 pub fn createColumn(
     self: *Self,
-    allocator: Allocator,
     tmp_arena: *ArenaAllocator,
     column: *const Column,
 ) !void {
@@ -119,8 +118,7 @@ pub fn createColumn(
 
     try stmt.bind(.Int32, 1, column.rank);
     try stmt.bind(.Text, 2, column.name);
-    const column_type = try fmt.allocPrint(allocator, "{s}", .{column.column_type});
-    defer allocator.free(column_type);
+    const column_type = try fmt.allocPrint(tmp_arena.allocator(), "{s}", .{column.column_type});
     try stmt.bind(.Text, 3, column_type);
     const sk_rank: ?i32 = if (column.sk_rank) |r| @intCast(r) else null;
     try stmt.bind(.Int32, 4, sk_rank);

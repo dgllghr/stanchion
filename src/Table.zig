@@ -83,7 +83,7 @@ pub fn create(
     };
 
     self.schema = Schema.create(
-        self.table_static_arena.allocator(),
+        &self.table_static_arena,
         cb_ctx.arena,
         &self.db.schema,
         def,
@@ -91,7 +91,6 @@ pub fn create(
         cb_ctx.setErrorMessage("error creating schema: {any}", .{e});
         return e;
     };
-    errdefer self.schema.deinit(self.table_static_arena.allocator());
 
     self.primary_index = PrimaryIndex.create(
         cb_ctx.arena,
@@ -170,14 +169,13 @@ pub fn connect(
     };
 
     self.schema = Schema.load(
-        self.table_static_arena.allocator(),
+        &self.table_static_arena,
         cb_ctx.arena,
         &self.db.schema,
     ) catch |e| {
         cb_ctx.setErrorMessage("error loading schema: {any}", .{e});
         return e;
     };
-    errdefer self.schema.deinit(self.table_static_arena.allocator());
 
     self.primary_index = PrimaryIndex.open(
         cb_ctx.arena,
