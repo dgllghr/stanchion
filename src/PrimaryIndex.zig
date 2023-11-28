@@ -388,10 +388,18 @@ pub fn insertRowGroupEntry(
 // Nodes
 //
 
+/// Returns the handle to the start node. The returned handle does not have a head. It can be used
+/// to iterate the pending inserts in the node. Only one `NodeHandle` can be in use at a time.
+/// Deinitialize the `NodeHandle` from the previous call to this function or `containingNodeHandle`
+/// before calling this function again.
+pub fn startNodeHandle(self: *Self) !*NodeHandle {
+    return self.nodes.startNodeHandle(&self.ctx);
+}
+
 /// Finds the node that contains the provided sort key and rowid. The returned handle can be used
 /// to read the node head and iterate the pending inserts in the node. Only one `NodeHandle` can be
-/// in use at a time. Deinitialize the `NodeHandle` from the previous call before calling this
-/// function again.
+/// in use at a time. Deinitialize the `NodeHandle` from the previous call to this function or
+/// startNodeHandle` before calling this function again.
 pub fn containingNodeHandle(
     self: *Self,
     tmp_arena: *ArenaAllocator,

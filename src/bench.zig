@@ -1,3 +1,5 @@
+const row_group = @import("row_group.zig");
+
 pub fn main() !void {
-    try @import("./stripe/message_log.zig").benchScanMessageLog();
+    try row_group.benchRowGroupCreate();
 }

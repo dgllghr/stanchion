@@ -41,6 +41,13 @@ pub const Nodes = struct {
         self.node_head_entry.deinit();
     }
 
+    /// Only one row group entry can be open at a time. Deinit `HeadEntryHandle` before calling
+    /// this function or `containingNodeHandle` to create a new one.
+    pub fn startNodeHandle(self: *Nodes, ctx: *Ctx) !*NodeHandle {
+        self.handle = NodeHandle.init(ctx, &self.pending_inserts, null);
+        return &self.handle;
+    }
+
     fn headEntryQuery(ctx: *const Ctx, arena: *ArenaAllocator) ![]const u8 {
         return fmt.allocPrintZ(arena.allocator(),
             \\SELECT record_count, col_rowid, rowid, {s}, {s}
@@ -60,7 +67,7 @@ pub const Nodes = struct {
     }
 
     /// Only one row group entry can be open at a time. Deinit `HeadEntryHandle` before calling
-    /// this function to create a new one.
+    /// this function or `startNodeHandle` to create a new one.
     pub fn containingNodeHandle(
         self: *Nodes,
         tmp_arena: *ArenaAllocator,

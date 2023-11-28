@@ -147,7 +147,7 @@ pub const Creator = struct {
         const full_row_groups =
             (self.row_group_cursor.row_group.record_count + pending_inserts_len) /
             self.max_row_group_len;
-        if (full_row_groups < 2) {
+        if (full_row_groups == 0) {
             return 0;
         }
         const num_row_groups = @min(full_row_groups, if (node.head) |_| n + 1 else n);
@@ -760,7 +760,7 @@ test "row group: round trip" {
     });
     const schema = try Schema.create(arena.allocator(), &arena, &schema_db, schema_def);
 
-    var pidx = try PrimaryIndex.create(&arena, conn, "foo", &schema);
+    var pidx = try PrimaryIndex.create(&arena, conn, table_name, &schema);
 
     var table_values = [_][3]MemoryValue{
         .{
@@ -821,4 +821,109 @@ test "row group: round trip" {
         idx += 1;
         try cursor.next();
     }
+}
+
+pub fn benchRowGroupCreate() !void {
+    const row_group_len: u32 = 10_000;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makeDir(&tmp_dir.sub_path);
+    var path_buf: [200]u8 = undefined;
+    const tmp_path = try tmp_dir.parent_dir.realpath(&tmp_dir.sub_path, &path_buf);
+    const db_path = try std.fs.path.joinZ(std.heap.page_allocator, &[_][]const u8{
+        tmp_path,
+        "bench.db",
+    });
+
+    const Conn = @import("sqlite3/Conn.zig");
+    const conn = try Conn.open(db_path);
+    defer conn.close();
+
+    var arena = ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const table_name = "test";
+
+    try schema_mod.Db.createTable(&arena, conn, table_name);
+    var schema_db = schema_mod.Db.init(conn, table_name);
+    defer schema_db.deinit();
+
+    try SegmentDb.createTable(&arena, conn, table_name);
+    var segment_db = try SegmentDb.init(&arena, conn, table_name);
+    defer segment_db.deinit();
+
+    const schema_def = try schema_mod.SchemaDef.parse(&arena, &[_][]const u8{
+        "quadrant TEXT NOT NULL",
+        "sector INTEGER NOT NULL",
+        "size INTEGER NULL",
+        "gravity FLOAT NULL",
+        "name TEXT NOT NULL",
+        "SORT KEY (quadrant, sector)",
+    });
+    const schema = try Schema.create(arena.allocator(), &arena, &schema_db, schema_def);
+
+    var pidx = try PrimaryIndex.create(&arena, conn, table_name, &schema);
+
+    const seed = @as(u64, @truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))));
+    var prng = std.rand.DefaultPrng.init(seed);
+
+    // Create a row group from pending inserts only (no merge)
+
+    try conn.exec("BEGIN");
+    const start_insert = std.time.microTimestamp();
+    for (0..row_group_len) |_| {
+        try insertRandomRow(&arena, &pidx, &prng);
+    }
+    try conn.exec("COMMIT");
+    const end_insert = std.time.microTimestamp();
+    std.log.err("insert pending insert: total: {d} micros, per insert: {d} micros", .{
+        end_insert - start_insert,
+        @divTrunc(end_insert - start_insert, row_group_len),
+    });
+
+    {
+        var node = try pidx.startNodeHandle();
+        defer node.deinit();
+
+        var creator = try Creator.init(
+            std.heap.page_allocator,
+            &arena,
+            &segment_db,
+            &schema,
+            &pidx,
+            row_group_len,
+        );
+
+        try conn.exec("BEGIN");
+        const start = std.time.microTimestamp();
+        const n = try creator.createN(&arena, node, 1);
+        try conn.exec("COMMIT");
+        const end = std.time.microTimestamp();
+        std.log.err("create row group: {d} micros", .{end - start});
+        std.debug.assert(n == 1);
+    }
+
+    // Create a row group with a merge
+
+    // TODO
+}
+
+fn insertRandomRow(
+    tmp_arena: *ArenaAllocator,
+    pidx: *PrimaryIndex,
+    prng: *std.rand.DefaultPrng,
+) !void {
+    var quadrant_buf: [10]u8 = undefined;
+    prng.random().bytes(&quadrant_buf);
+
+    var values = [5]MemoryValue{
+        .{ .Text = &quadrant_buf },
+        .{ .Integer = prng.random().int(i64) },
+        .{ .Integer = 100 },
+        .{ .Float = 3.75 },
+        .{ .Text = "Veridian 3" },
+    };
+
+    _ = try pidx.insertInsertEntry(tmp_arena, MemoryTuple{ .values = &values });
 }

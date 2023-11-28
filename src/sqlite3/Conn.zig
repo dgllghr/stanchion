@@ -17,7 +17,7 @@ pub fn init(conn: *c.sqlite3) Self {
 }
 
 pub fn open(path: [*c]const u8) !Self {
-    const flags = c.SQLITE_OPEN_READWRITE;
+    const flags = c.SQLITE_OPEN_READWRITE | c.SQLITE_OPEN_CREATE;
     var conn: ?*c.sqlite3 = null;
     const res = c.sqlite3_open_v2(path, &conn, flags, null);
     if (res != c.SQLITE_OK) {

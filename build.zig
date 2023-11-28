@@ -93,10 +93,13 @@ pub fn build(b: *std.Build) void {
         .name = "stanchion_benches",
         .root_source_file = .{ .path = "src/bench.zig" },
         .target = target,
-        // This may be too aggressive but the speed up is significant for scanning the
-        // message log (3-5x improvement on my machine)
         .optimize = .ReleaseFast,
     });
+    benches.addCSourceFile(.{
+        .file = .{ .path = "src/sqlite3/c/sqlite3.c" },
+        .flags = &[_][]const u8{"-std=c99"},
+    });
+    benches.addIncludePath(.{ .path = "src/sqlite3/c" });
     const benches_options = b.addOptions();
     benches.addOptions("build_options", benches_options);
     benches_options.addOption(bool, "loadable_extension", false);
