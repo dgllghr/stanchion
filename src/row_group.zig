@@ -862,7 +862,7 @@ pub fn benchRowGroupCreate() !void {
         "name TEXT NOT NULL",
         "SORT KEY (quadrant, sector)",
     });
-    const schema = try Schema.create(arena.allocator(), &arena, &schema_db, schema_def);
+    const schema = try Schema.create(&arena, &arena, &schema_db, schema_def);
 
     var pidx = try PrimaryIndex.create(&arena, conn, table_name, &schema);
 
@@ -874,7 +874,8 @@ pub fn benchRowGroupCreate() !void {
     try conn.exec("BEGIN");
     const start_insert = std.time.microTimestamp();
     for (0..row_group_len) |_| {
-        try insertRandomRow(&arena, &pidx, &prng);
+        var row = randomRow(&prng);
+        _ = try pidx.insertInsertEntry(&arena, MemoryTuple{ .values = &row });
     }
     try conn.exec("COMMIT");
     const end_insert = std.time.microTimestamp();
@@ -884,21 +885,26 @@ pub fn benchRowGroupCreate() !void {
     });
 
     {
-        var node = try pidx.startNodeHandle();
-        defer node.deinit();
+        var start: i64 = undefined;
+        var n: usize = undefined;
+        {
+            var node = try pidx.startNodeHandle();
+            defer node.deinit();
 
-        var creator = try Creator.init(
-            std.heap.page_allocator,
-            &arena,
-            &segment_db,
-            &schema,
-            &pidx,
-            row_group_len,
-        );
+            var creator = try Creator.init(
+                std.heap.page_allocator,
+                &arena,
+                &segment_db,
+                &schema,
+                &pidx,
+                row_group_len,
+            );
+            defer creator.deinit();
 
-        try conn.exec("BEGIN");
-        const start = std.time.microTimestamp();
-        const n = try creator.createN(&arena, node, 1);
+            try conn.exec("BEGIN");
+            start = std.time.microTimestamp();
+            n = try creator.createN(&arena, node, 1);
+        }
         try conn.exec("COMMIT");
         const end = std.time.microTimestamp();
         std.log.err("create row group: {d} micros", .{end - start});
@@ -907,24 +913,53 @@ pub fn benchRowGroupCreate() !void {
 
     // Create a row group with a merge
 
-    // TODO
+    try conn.exec("BEGIN");
+    for (0..(row_group_len * 3)) |_| {
+        var row = randomRow(&prng);
+        _ = try pidx.insertInsertEntry(&arena, MemoryTuple{ .values = &row });
+    }
+    try conn.exec("COMMIT");
+
+    {
+        var start: i64 = undefined;
+        var n: usize = undefined;
+        {
+            var end_row = randomRow(&prng);
+            end_row[0] = .{ .Text = "ZZZZ" };
+            var node = try pidx.containingNodeHandle(&arena, MemoryTuple{ .values = &end_row }, 1);
+            defer node.deinit();
+
+            var creator = try Creator.init(
+                std.heap.page_allocator,
+                &arena,
+                &segment_db,
+                &schema,
+                &pidx,
+                row_group_len,
+            );
+            defer creator.deinit();
+
+            try conn.exec("BEGIN");
+            start = std.time.microTimestamp();
+            n = try creator.createN(&arena, node, 1);
+        }
+        try conn.exec("COMMIT");
+        const end = std.time.microTimestamp();
+        std.log.err("create row group: {d} micros", .{end - start});
+        std.debug.assert(n == 1);
+    }
 }
 
-fn insertRandomRow(
-    tmp_arena: *ArenaAllocator,
-    pidx: *PrimaryIndex,
-    prng: *std.rand.DefaultPrng,
-) !void {
-    var quadrant_buf: [10]u8 = undefined;
-    prng.random().bytes(&quadrant_buf);
+const quadrants = [_][]const u8{ "Alpha", "Beta", "Gamma", "Delta" };
 
-    var values = [5]MemoryValue{
-        .{ .Text = &quadrant_buf },
+fn randomRow(prng: *std.rand.DefaultPrng) [5]MemoryValue {
+    const quadrant = quadrants[prng.random().intRangeLessThan(usize, 0, quadrants.len)];
+
+    return [5]MemoryValue{
+        .{ .Text = quadrant },
         .{ .Integer = prng.random().int(i64) },
         .{ .Integer = 100 },
         .{ .Float = 3.75 },
         .{ .Text = "Veridian 3" },
     };
-
-    _ = try pidx.insertInsertEntry(tmp_arena, MemoryTuple{ .values = &values });
 }
