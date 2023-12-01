@@ -8,6 +8,7 @@ const ChangeSet = @import("sqlite3/ChangeSet.zig");
 const Conn = @import("sqlite3/Conn.zig");
 const SqliteErorr = @import("sqlite3/errors.zig").Error;
 const Stmt = @import("sqlite3/Stmt.zig");
+const ValueRef = @import("sqlite3/value.zig").Ref;
 const vtab = @import("sqlite3/vtab.zig");
 const sqlite_c = @import("sqlite3/c.zig").c;
 const Result = vtab.Result;
@@ -271,31 +272,125 @@ pub fn update(
     @panic("delete and update are not supported");
 }
 
-pub fn bestIndex(
-    _: *Self,
-    _: *vtab.CallbackContext,
-    _: *vtab.BestIndexBuilder,
-) !void {
-    // TODO could `estimatedCost` be as simple as the number of row groups accessed? or
-    //      how about number of rows (row groups * record count) * number of columns? is
-    //      columns accessed in the query even available here? actually `estimatedRows`
-    //      is where the row count should be supplied
-    // for (best_index.constraints) |*c| {
-    //     std.log.debug("constraint on column {d}, usable: {any}", .{c.column, c.usable},);
-    // }
-}
+const IndexCode = enum(u8) {
+    sort_key = 1,
+};
 
-pub fn open(
+pub fn bestIndex(
     self: *Self,
     cb_ctx: *vtab.CallbackContext,
-) !Cursor {
-    return Cursor.init(
-        self.allocator,
-        cb_ctx.arena,
-        &self.db.segment,
-        &self.schema,
-        &self.primary_index,
-    );
+    best_index: vtab.BestIndexInfo,
+) !void {
+    std.log.debug("best index: {} constraints", .{best_index.constraintsLen()});
+
+    // Determine if row group elimination using the sort key (primary) index is possible. This is
+    // currently the only index that is supported. The sort key index may be a composite index, and
+    // the posgres documentation has an excellent summary of the logic for determining if using a
+    // composite index is possible:
+    // > The exact rule is that equality constraints on leading columns, plus any inequality
+    // > constraints on the first column that does not have an equality constraint, will be used to
+    // > limit the portion of the index that is scanned.
+    //
+    // This function needs to communicate to the cursor:
+    // * the sort key is being used to eliminate rows
+    // * the number of equality columns being used
+    // * the operation on the first non-equality column
+    // Note that "there is no guarantee that xFilter will be called following a successful
+    // xBestIndex", which means it is tricky to determine when to deallocate data stored about the
+    // selected index. Because of that, encode the data needed by the cursor in the string
+    // identifier, which sqlite passes to the xFilter callback.
+
+    // Store the constraints that operate on sort key columns in sort key column order. Keep only
+    // the most restrictive op for each sort key column
+    const sort_key = self.schema.sort_key.items;
+    var sort_key_constraints = try cb_ctx.arena.allocator()
+        .alloc(?vtab.BestIndexInfo.Constraint, sort_key.len);
+    for (sort_key_constraints) |*c| {
+        c.* = null;
+    }
+    for (0..best_index.constraintsLen()) |cnst_index| {
+        const constraint = best_index.constraint(cnst_index);
+        std.log.debug(
+            "evaluating constraint on column {} (usable = {})",
+            .{ constraint.columnIndex(), constraint.usable() },
+        );
+
+        if (!constraint.usable()) {
+            continue;
+        }
+
+        const col_index = constraint.columnIndex();
+        const sk_index = std.mem.indexOfScalar(usize, sort_key, @intCast(col_index));
+        if (sk_index) |sk_idx| {
+            // Ensure that the op is one that can be used at all for elimination and if there is
+            // an existing constraint already recorded for the sort key column that the constraint
+            // stored is the most restrictive one
+            const op_rank = constraintOpRank(constraint.op());
+            if (op_rank) |rank| {
+                if (sort_key_constraints[sk_idx]) |existing_constraint| {
+                    const existing_op_rank = constraintOpRank(existing_constraint.op()).?;
+                    if (rank < existing_op_rank) {
+                        sort_key_constraints[sk_idx] = constraint;
+                    }
+                } else {
+                    sort_key_constraints[sk_idx] = constraint;
+                }
+            }
+        }
+    }
+
+    // Determine if the sort key (primary) index can be used
+    var sk_eq_prefix_len: u32 = 0;
+    var last_op: vtab.BestIndexInfo.Op = undefined;
+    for (sort_key_constraints) |sk_constraint| {
+        // TODO consider the collation using `sqlite3_vtab_collation` for each text column to do
+        //      text comparisons properly
+        if (sk_constraint == null) {
+            break;
+        }
+
+        // Communicates to sqlite that the rhs value of this constraint should be passed to xFilter
+        // At this point, it is guaranteed that the sort key index will be used so communicate this
+        // here instead of looping over the constraints again
+        sk_constraint.?.includeArgInFilter(sk_eq_prefix_len + 1);
+        last_op = sk_constraint.?.op();
+        sk_eq_prefix_len += 1;
+        if (sk_constraint.?.op() != .eq and sk_constraint.?.op() != .is) {
+            break;
+        }
+    }
+
+    const use_sort_key_index = sk_eq_prefix_len > 0;
+    if (use_sort_key_index) {
+        std.log.debug("using sort key index", .{});
+
+        var identifier: u32 = @intFromEnum(IndexCode.sort_key);
+        // Embed the last_op in the MSB of the identifier
+        // `last_op` is guaranteed to have been set at this point
+        identifier |= @as(u32, @intCast(@intFromEnum(last_op))) << 24;
+        best_index.setIdentifier(@bitCast(identifier));
+
+        // Because only the sort key index is supported, set the estimated cost based on the number
+        // of columns in the sort key that can be utilized. Start with a large value and subtract
+        // the number of sort key columns that can be utilized. This is not a true cost estimate
+        // and only works when comparing different plans that utilize the sort key index against
+        // each other.
+        // TODO in situations where the rhs value of the sort key constraints are available, it is
+        //      possible to generate a true cost estimate by doing row group elimination here.
+        const estimated_cost = 1_000 - @min(1_000, sk_eq_prefix_len);
+        std.log.debug("estimated cost: {}", .{estimated_cost});
+        best_index.setEstimatedCost(@floatFromInt(estimated_cost));
+    }
+}
+
+/// Constraint ops that are supported for row group elimination. Ops are sorted from most
+/// restrictive to least
+const supported_constraint_ops = [_]vtab.BestIndexInfo.Op{ .eq, .is, .gt, .lt, .le, .ge };
+
+/// Constraint ops are ordered by restrictiveness so that the most restrictive op can be associated
+/// with a column. If the op is not supported, null is returned.
+fn constraintOpRank(op: vtab.BestIndexInfo.Op) ?usize {
+    return mem.indexOfScalar(vtab.BestIndexInfo.Op, &supported_constraint_ops, op);
 }
 
 pub fn begin(_: *Self, _: *vtab.CallbackContext) !void {
@@ -342,34 +437,94 @@ pub fn isShadowName(name: [:0]const u8) bool {
     return false;
 }
 
+pub fn open(
+    self: *Self,
+    _: *vtab.CallbackContext,
+) !Cursor {
+    std.log.debug("open cursor", .{});
+    return Cursor.init(
+        self.allocator,
+        &self.db.segment,
+        &self.schema,
+        &self.primary_index,
+    );
+}
+
 pub const Cursor = struct {
+    primary_index: *PrimaryIndex,
+
     pidx_cursor: PrimaryIndex.Cursor,
     rg_cursor: row_group.Cursor,
     in_row_group: bool,
 
+    pidx_cursor_initialized: bool,
+
     pub fn init(
         allocator: Allocator,
-        tmp_arena: *ArenaAllocator,
         segment_db: *segment.Db,
         schema: *const Schema,
         primary_index: *PrimaryIndex,
     ) !Cursor {
-        var pidx_cursor = try primary_index.cursor(tmp_arena);
-        errdefer pidx_cursor.deinit();
         const rg_cursor = try row_group.Cursor.init(allocator, segment_db, schema);
         return .{
-            .pidx_cursor = pidx_cursor,
+            .primary_index = primary_index,
+            .pidx_cursor = undefined,
             .rg_cursor = rg_cursor,
             .in_row_group = false,
+            .pidx_cursor_initialized = false,
         };
     }
 
     pub fn deinit(self: *Cursor) void {
         self.rg_cursor.deinit();
-        self.pidx_cursor.deinit();
+        if (self.pidx_cursor_initialized) {
+            self.pidx_cursor.deinit();
+        }
     }
 
-    pub fn begin(self: *Cursor) !void {
+    pub fn begin(
+        self: *Cursor,
+        cb_ctx: *vtab.CallbackContext,
+        index_id_num: i32,
+        _: [:0]const u8,
+        filter_args: vtab.FilterArgs,
+    ) !void {
+        std.log.debug("index num: {}", .{index_id_num});
+        const index_code_num = index_id_num & 0xFF;
+        if (std.meta.intToEnum(IndexCode, index_code_num)) |index_code| {
+            std.debug.assert(filter_args.valuesLen() > 0);
+            const last_op: vtab.BestIndexInfo.Op = @enumFromInt(index_id_num >> 24);
+            std.log.debug("filtering with index: {} {}", .{ index_code, last_op });
+            std.log.debug("filtering args: {}", .{filter_args.valuesLen()});
+
+            const range = PrimaryIndex.CursorRange(vtab.FilterArgs){
+                .key = filter_args,
+                .last_op = switch (last_op) {
+                    .eq => .eq,
+                    .gt => .gt,
+                    .ge => .ge,
+                    .lt => .lt,
+                    .le => .le,
+                    else => unreachable,
+                },
+            };
+
+            self.pidx_cursor = try self.primary_index.cursor(
+                vtab.FilterArgs,
+                cb_ctx.arena,
+                range,
+            );
+            self.pidx_cursor_initialized = true;
+        } else |_| {
+            std.log.debug("doing table scan", .{});
+            self.pidx_cursor = try self.primary_index.cursor(
+                vtab.FilterArgs,
+                cb_ctx.arena,
+                null,
+            );
+            self.pidx_cursor_initialized = true;
+        }
+
         try self.next();
     }
 

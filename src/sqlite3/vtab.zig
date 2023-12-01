@@ -84,265 +84,88 @@ const ArenaPool = struct {
     }
 };
 
-pub const BestIndexBuilder = struct {
-    const Self = @This();
+pub const BestIndexInfo = struct {
+    index_info: ?*c.sqlite3_index_info,
 
-    /// Constraint operator codes.
-    /// See https://sqlite.org/c3ref/c_index_constraint_eq.html
-    pub const ConstraintOp = if (versionGreaterThanOrEqualTo(3, 38, 0))
-        enum {
-            eq,
-            gt,
-            le,
-            lt,
-            ge,
-            match,
-            like,
-            glob,
-            regexp,
-            ne,
-            is_not,
-            is_not_null,
-            is_null,
-            is,
-            limit,
-            offset,
-        }
-    else
-        enum {
-            eq,
-            gt,
-            le,
-            lt,
-            ge,
-            match,
-            like,
-            glob,
-            regexp,
-            ne,
-            is_not,
-            is_not_null,
-            is_null,
-            is,
-        };
-
-    const ConstraintOpFromCodeError = error{
-        InvalidCode,
+    pub const Op = enum(c_char) {
+        eq = c.SQLITE_INDEX_CONSTRAINT_EQ,
+        gt = c.SQLITE_INDEX_CONSTRAINT_GT,
+        le = c.SQLITE_INDEX_CONSTRAINT_LE,
+        lt = c.SQLITE_INDEX_CONSTRAINT_LT,
+        ge = c.SQLITE_INDEX_CONSTRAINT_GE,
+        match = c.SQLITE_INDEX_CONSTRAINT_MATCH,
+        like = c.SQLITE_INDEX_CONSTRAINT_LIKE,
+        glob = c.SQLITE_INDEX_CONSTRAINT_GLOB,
+        regexp = c.SQLITE_INDEX_CONSTRAINT_REGEXP,
+        ne = c.SQLITE_INDEX_CONSTRAINT_NE,
+        is_not = c.SQLITE_INDEX_CONSTRAINT_ISNOT,
+        is_not_null = c.SQLITE_INDEX_CONSTRAINT_ISNOTNULL,
+        is_null = c.SQLITE_INDEX_CONSTRAINT_ISNULL,
+        is = c.SQLITE_INDEX_CONSTRAINT_IS,
+        limit = c.SQLITE_INDEX_CONSTRAINT_LIMIT,
+        offset = c.SQLITE_INDEX_CONSTRAINT_OFFSET,
+        function = @bitCast(@as(u8, c.SQLITE_INDEX_CONSTRAINT_FUNCTION)),
+        _,
     };
 
-    fn constraintOpFromCode(code: u8) ConstraintOpFromCodeError!ConstraintOp {
-        if (comptime versionGreaterThanOrEqualTo(3, 38, 0)) {
-            switch (code) {
-                c.SQLITE_INDEX_CONSTRAINT_LIMIT => return .limit,
-                c.SQLITE_INDEX_CONSTRAINT_OFFSET => return .offset,
-                else => {},
-            }
-        }
-
-        switch (code) {
-            c.SQLITE_INDEX_CONSTRAINT_EQ => return .eq,
-            c.SQLITE_INDEX_CONSTRAINT_GT => return .gt,
-            c.SQLITE_INDEX_CONSTRAINT_LE => return .le,
-            c.SQLITE_INDEX_CONSTRAINT_LT => return .lt,
-            c.SQLITE_INDEX_CONSTRAINT_GE => return .ge,
-            c.SQLITE_INDEX_CONSTRAINT_MATCH => return .match,
-            c.SQLITE_INDEX_CONSTRAINT_LIKE => return .like,
-            c.SQLITE_INDEX_CONSTRAINT_GLOB => return .glob,
-            c.SQLITE_INDEX_CONSTRAINT_REGEXP => return .regexp,
-            c.SQLITE_INDEX_CONSTRAINT_NE => return .ne,
-            c.SQLITE_INDEX_CONSTRAINT_ISNOT => return .is_not,
-            c.SQLITE_INDEX_CONSTRAINT_ISNOTNULL => return .is_not_null,
-            c.SQLITE_INDEX_CONSTRAINT_ISNULL => return .is_null,
-            c.SQLITE_INDEX_CONSTRAINT_IS => return .is,
-            else => return error.InvalidCode,
-        }
-    }
-
-    // WHERE clause constraint
     pub const Constraint = struct {
-        // Column constrained. -1 for ROWID
-        column: isize,
-        op: ConstraintOp,
-        usable: bool,
+        parent: ?*c.sqlite3_index_info,
+        index: usize,
 
-        usage: struct {
-            // If >0, constraint is part of argv to xFilter
-            argv_index: i32 = 0,
-            // Id >0, do not code a test for this constraint
-            omit: bool = false,
-        },
+        pub fn columnIndex(self: Constraint) u32 {
+            return @intCast(self.parent.?.*.aConstraint[self.index].iColumn);
+        }
+
+        pub fn op(self: Constraint) Op {
+            return @enumFromInt(self.parent.?.*.aConstraint[self.index].op);
+        }
+
+        pub fn usable(self: Constraint) bool {
+            return self.parent.?.*.aConstraint[self.index].usable != 0;
+        }
+
+        pub fn includeArgInFilter(self: Constraint, argIndex: u32) void {
+            var usage = &self.parent.?.*.aConstraintUsage[self.index];
+            usage.argvIndex = @intCast(argIndex);
+        }
+
+        pub fn setOmitTest(self: Constraint, omit: bool) void {
+            var usage = &self.parent.?.*.aConstraintUsage[self.index];
+            usage.omit = @intFromBool(omit);
+        }
     };
 
-    // ORDER BY clause
-    pub const OrderBy = struct {
-        column: usize,
-        order: enum {
-            desc,
-            asc,
-        },
-    };
-
-    /// Internal state
-    allocator: mem.Allocator,
-    id_str_buffer: std.ArrayList(u8),
-    index_info: *c.sqlite3_index_info,
-
-    /// List of WHERE clause constraints
-    ///
-    /// Similar to `aConstraint` in the Inputs section of sqlite3_index_info except we
-    /// embed the constraint usage in there too. This makes it nicer to use for the user.
-    constraints: []Constraint,
-
-    /// Indicate which columns of the virtual table are actually used by the statement.
-    /// If the lowest bit of colUsed is set, that means that the first column is used.
-    /// The second lowest bit corresponds to the second column. And so forth.
-    ///
-    /// Maps to the `colUsed` field.
-    columns_used: u64,
-
-    /// Index identifier.
-    /// This is passed to the filtering function to identify which index to use.
-    ///
-    /// Maps to the `idxNum` and `idxStr` field in sqlite3_index_info.
-    /// Id id.id_str is non empty the string will be copied to a SQLite-allocated buffer
-    /// and `needToFreeIdxStr` will be 1.
-    id: IndexIdentifier,
-
-    /// If the virtual table will output its rows already in the order specified by the
-    /// ORDER BY clause then this can be set to true. This will indicate to SQLite that
-    /// it doesn't need to do a sorting pass.
-    ///
-    /// Maps to the `orderByConsumed` field.
-    already_ordered: bool = false,
-
-    /// Estimated number of "disk access operations" required to execute this query.
-    ///
-    /// Maps to the `estimatedCost` field.
-    estimated_cost: ?f64 = null,
-
-    /// Estimated number of rows returned by this query.
-    ///
-    /// Maps to the `estimatedRows` field.
-    ///
-    /// TODO: implement this
-    estimated_rows: ?i64 = null,
-
-    /// Additional flags for this index.
-    ///
-    /// Maps to the `idxFlags` field.
-    flags: struct {
-        unique: bool = false,
-    } = .{},
-
-    const InitError = error{} || mem.Allocator.Error || ConstraintOpFromCodeError;
-
-    fn init(allocator: mem.Allocator, index_info: *c.sqlite3_index_info) InitError!Self {
-        const res = Self{
-            .allocator = allocator,
-            .index_info = index_info,
-            .id_str_buffer = std.ArrayList(u8).init(allocator),
-            .constraints = try allocator.alloc(Constraint, @intCast(index_info.nConstraint)),
-            .columns_used = @intCast(index_info.colUsed),
-            .id = .{},
-        };
-
-        for (res.constraints, 0..) |*constraint, i| {
-            const raw_constraint = index_info.aConstraint[i];
-
-            constraint.column = @intCast(raw_constraint.iColumn);
-            constraint.op = try constraintOpFromCode(raw_constraint.op);
-            constraint.usable = if (raw_constraint.usable == 1) true else false;
-            constraint.usage = .{};
-        }
-
-        return res;
+    pub fn constraintsLen(self: BestIndexInfo) u32 {
+        return @intCast(self.index_info.?.*.nConstraint);
     }
 
-    /// Returns true if the column is used, false otherwise.
-    pub fn isColumnUsed(self: *Self, column: u6) bool {
-        const mask = @as(u64, 1) << column - 1;
-        return self.columns_used & mask == mask;
+    pub fn constraint(self: BestIndexInfo, index: usize) Constraint {
+        return .{ .parent = self.index_info, .index = index };
     }
 
-    /// Builds the final index data.
-    ///
-    /// Internally it populates the sqlite3_index_info "Outputs" fields using the
-    /// information set by the user.
-    pub fn build(self: *Self) void {
-        var index_info = self.index_info;
+    pub fn setIdentifier(self: BestIndexInfo, num: i32) void {
+        self.index_info.?.*.idxNum = @intCast(num);
+    }
 
-        // Populate the constraint usage
-        var constraint_usage: []c.sqlite3_index_constraint_usage =
-            index_info.aConstraintUsage[0..self.constraints.len];
-        for (self.constraints, 0..) |constraint, i| {
-            constraint_usage[i].argvIndex = constraint.usage.argv_index;
-            constraint_usage[i].omit = if (constraint.usage.omit) 1 else 0;
-        }
-
-        // Identifiers
-        index_info.idxNum = @intCast(self.id.num);
-        if (self.id.str.len > 0) {
-            // Must always be NULL-terminated so add 1
-            const tmp: [*c]u8 = @ptrCast(c.sqlite3_malloc(@intCast(self.id.str.len + 1)));
-
-            mem.copy(u8, tmp[0..self.id.str.len], self.id.str);
-            tmp[self.id.str.len] = 0;
-
-            index_info.idxStr = tmp;
-            index_info.needToFreeIdxStr = 1;
-        }
-
-        index_info.orderByConsumed = if (self.already_ordered) 1 else 0;
-        if (self.estimated_cost) |estimated_cost| {
-            index_info.estimatedCost = estimated_cost;
-        }
-        if (self.estimated_rows) |estimated_rows| {
-            index_info.estimatedRows = estimated_rows;
-        }
-
-        // Flags
-        index_info.idxFlags = 0;
-        if (self.flags.unique) {
-            index_info.idxFlags |= c.SQLITE_INDEX_SCAN_UNIQUE;
-        }
+    pub fn setEstimatedCost(self: BestIndexInfo, cost: f64) void {
+        self.index_info.?.*.estimatedCost = @floatCast(cost);
     }
 };
 
-/// Identifies an index for a virtual table.
-///
-/// The user-provided buildBestIndex functions sets the index identifier.
-/// These fields are meaningless for SQLite so they can be whatever you want as long as
-/// both buildBestIndex and filter functions agree on what they mean.
-pub const IndexIdentifier = struct {
-    num: i32 = 0,
-    str: []const u8 = "",
+pub const FilterArgs = struct {
+    values: [*c]?*c.sqlite3_value,
+    values_len: usize,
 
-    fn fromC(idx_num: c_int, idx_str: [*c]const u8) IndexIdentifier {
-        return IndexIdentifier{
-            .num = @intCast(idx_num),
-            .str = if (idx_str != null) mem.sliceTo(idx_str, 0) else "",
+    pub fn valuesLen(self: FilterArgs) usize {
+        return self.values_len;
+    }
+
+    pub fn readValue(self: FilterArgs, index: usize) !ValueRef {
+        return .{
+            .value = self.values[index],
         };
     }
 };
-
-pub const FilterArg = struct {
-    value: ?*c.sqlite3_value,
-};
-
-fn parseModuleArguments(
-    allocator: mem.Allocator,
-    argc: c_int,
-    argv: [*c]const [*c]const u8,
-) ![]const []const u8 {
-    const res = try allocator.alloc([]const u8, @intCast(argc));
-
-    for (res, 0..) |*marg, i| {
-        // The documentation of sqlite says each string in argv is null-terminated
-        marg.* = mem.sliceTo(argv[i], 0);
-    }
-
-    return res;
-}
 
 pub const Result = struct {
     const Self = @This();
@@ -429,7 +252,17 @@ pub fn VirtualTable(comptime Table: type) type {
     const CursorState = struct {
         vtab_cursor: c.sqlite3_vtab_cursor,
         allocator: mem.Allocator,
+        arena_pool: *ArenaPool,
         cursor: Table.Cursor,
+
+        fn cbCtx(self: *@This()) !CallbackContext {
+            const arena = try self.arena_pool.take(self.allocator);
+            return CallbackContext.init(arena);
+        }
+
+        fn reclaimCbCtx(self: *@This(), cb_ctx: *CallbackContext) void {
+            self.arena_pool.giveBack(cb_ctx.arena);
+        }
     };
 
     return struct {
@@ -639,15 +472,8 @@ pub fn VirtualTable(comptime Table: type) type {
             };
             defer state.reclaimCbCtx(&cb_ctx);
 
-            var best_index = BestIndexBuilder.init(
-                cb_ctx.arena.allocator(),
-                index_info_ptr,
-            ) catch |e| {
-                std.log.err("error initializing BestIndexBuilder: {any}", .{e});
-                return c.SQLITE_ERROR;
-            };
-
-            state.table.bestIndex(&cb_ctx, &best_index) catch |e| {
+            const best_index = BestIndexInfo{ .index_info = @ptrCast(index_info_ptr) };
+            state.table.bestIndex(&cb_ctx, best_index) catch |e| {
                 std.log.err("error calling bestIndex on table: {any}", .{e});
                 return c.SQLITE_ERROR;
             };
@@ -675,6 +501,7 @@ pub fn VirtualTable(comptime Table: type) type {
             cursor_state.* = .{
                 .vtab_cursor = mem.zeroes(c.sqlite3_vtab_cursor),
                 .allocator = state.allocator,
+                .arena_pool = &state.arena_pool,
                 .cursor = state.table.open(&cb_ctx) catch |e| {
                     std.log.err("error creating cursor: {any}", .{e});
                     return c.SQLITE_ERROR;
@@ -693,28 +520,24 @@ pub fn VirtualTable(comptime Table: type) type {
             argc: c_int,
             argv: [*c]?*c.sqlite3_value,
         ) callconv(.C) c_int {
-            _ = idx_num;
-            _ = idx_str;
-            _ = argc;
-            _ = argv;
+            const index_id_num: i32 = @intCast(idx_num);
+            const index_id_str = if (idx_str == null) "" else mem.sliceTo(idx_str, 0);
+            const filter_args = FilterArgs{ .values = argv, .values_len = @intCast(argc) };
 
             const state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
-            state.cursor.begin() catch |e| {
+            var cb_ctx = state.cbCtx() catch {
+                std.log.err("error allocating arena for callback context. out of memory", .{});
+                return c.SQLITE_ERROR;
+            };
+            defer state.reclaimCbCtx(&cb_ctx);
+
+            state.cursor.begin(&cb_ctx, index_id_num, index_id_str, filter_args) catch |e| {
                 std.log.err("error calling begin (xFilter) on cursor: {any}", .{e});
                 return c.SQLITE_ERROR;
             };
 
             return c.SQLITE_OK;
         }
-
-        // const FilterArgsFromCPointerError = error{} || mem.Allocator.Error;
-
-        // fn filterArgsFromCPointer(
-        //     allocator: mem.Allocator,
-        //     argc: c_int,
-        //     argv: [*c]?*c.sqlite3_value,
-        // ) FilterArgsFromCPointerError![]FilterArg {
-        // }
 
         fn xEof(vtab_cursor: [*c]c.sqlite3_vtab_cursor) callconv(.C) c_int {
             const state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
@@ -821,6 +644,21 @@ pub fn VirtualTable(comptime Table: type) type {
             return c.SQLITE_OK;
         }
     };
+}
+
+fn parseModuleArguments(
+    allocator: mem.Allocator,
+    argc: c_int,
+    argv: [*c]const [*c]const u8,
+) ![]const []const u8 {
+    const res = try allocator.alloc([]const u8, @intCast(argc));
+
+    for (res, 0..) |*marg, i| {
+        // The documentation of sqlite says each string in argv is null-terminated
+        marg.* = mem.sliceTo(argv[i], 0);
+    }
+
+    return res;
 }
 
 fn dupeToSQLiteString(s: []const u8) [*c]const u8 {

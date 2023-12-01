@@ -66,7 +66,6 @@ entries: Entries,
 nodes: Nodes,
 
 insert_entry: StmtCell,
-entries_iterator: StmtCell,
 
 load_next_rowid: Stmt,
 update_next_rowid: Stmt,
@@ -98,7 +97,6 @@ pub fn create(
         .entries = Entries.init(),
         .nodes = Nodes.init(),
         .insert_entry = StmtCell.init(&insertEntryDml),
-        .entries_iterator = StmtCell.init(&entriesIteratorQuery),
         .load_next_rowid = undefined,
         .update_next_rowid = undefined,
     };
@@ -174,7 +172,6 @@ pub fn open(
         .entries = Entries.init(),
         .nodes = Nodes.init(),
         .insert_entry = StmtCell.init(&insertEntryDml),
-        .entries_iterator = StmtCell.init(&entriesIteratorQuery),
         .load_next_rowid = undefined,
         .update_next_rowid = undefined,
     };
@@ -195,7 +192,6 @@ pub fn deinit(self: *Self) void {
     self.nodes.deinit();
     self.entries.deinit();
     self.insert_entry.deinit();
-    self.entries_iterator.deinit();
     self.load_next_rowid.deinit();
     self.update_next_rowid.deinit();
 }
@@ -506,11 +502,10 @@ test "primary index: insert staged insert" {
 
 pub const Cursor = struct {
     stmt: Stmt,
-    cell: *StmtCell,
     eof: bool,
 
     pub fn deinit(self: *@This()) void {
-        self.cell.reset();
+        self.stmt.deinit();
     }
 
     pub fn next(self: *@This()) !void {
@@ -540,26 +535,98 @@ pub const Cursor = struct {
     }
 };
 
-fn entriesIteratorQuery(ctx: *const Ctx, arena: *ArenaAllocator) ![]const u8 {
-    return fmt.allocPrintZ(arena.allocator(),
+pub fn cursor(
+    self: *Self,
+    comptime PartialSortKey: type,
+    tmp_arena: *ArenaAllocator,
+    range: ?CursorRange(PartialSortKey),
+) !Cursor {
+    // TODO because the constraints are dynamically generated, it doesn't make sense to store the
+    //      prepared statement in a `StmtCell`. However, this may benefit from a dynamic statement
+    //      cache since applications will probably take advantage of specific access patterns
+    const query = try fmt.allocPrintZ(tmp_arena.allocator(),
         \\SELECT entry_type, rowid, record_count, col_rowid, {s}
         \\FROM "{s}_primaryindex"
-        \\WHERE entry_type IN ({d}, {d})
+        \\WHERE entry_type IN ({d}, {d}) {}
         \\ORDER BY {s}, rowid ASC
     , .{
-        ColumnListFormatter("col_{d}"){ .len = ctx.columns_len },
-        ctx.vtab_table_name,
+        ColumnListFormatter("col_{d}"){ .len = self.ctx.columns_len },
+        self.ctx.vtab_table_name,
         @intFromEnum(EntryType.RowGroup),
         @intFromEnum(EntryType.Insert),
-        ColumnListFormatter("sk_value_{d} ASC"){ .len = ctx.sort_key.len },
+        OptionalRangeFmt(PartialSortKey){ .range = range },
+        ColumnListFormatter("sk_value_{d} ASC"){ .len = self.ctx.sort_key.len },
     });
+
+    const stmt = try self.ctx.conn.prepare(query);
+    errdefer stmt.deinit();
+
+    if (range) |r| {
+        for (0..r.key.valuesLen()) |idx| {
+            const v = try r.key.readValue(idx);
+            try v.bind(stmt, idx + 1);
+        }
+    }
+
+    return .{
+        .stmt = stmt,
+        .eof = false,
+    };
 }
 
-pub fn cursor(self: *Self, tmp_arena: *ArenaAllocator) !Cursor {
-    return .{
-        .stmt = try self.entries_iterator.getStmt(tmp_arena, &self.ctx),
-        .cell = &self.entries_iterator,
-        .eof = false,
+pub fn CursorRange(comptime PartialSortKey: type) type {
+    return struct {
+        key: PartialSortKey,
+        last_op: enum {
+            eq,
+            gt,
+            ge,
+            lt,
+            le,
+
+            pub fn symbol(self: @This()) []const u8 {
+                return switch (self) {
+                    .eq => "=",
+                    .gt => ">",
+                    .ge => ">=",
+                    .lt => "<",
+                    .le => "<=",
+                };
+            }
+        },
+
+        pub fn format(
+            self: @This(),
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            const key_len = self.key.valuesLen();
+            for (0..key_len) |idx| {
+                if (idx < key_len - 1) {
+                    try writer.print("sk_value_{d} = ? AND ", .{idx});
+                } else {
+                    try writer.print("sk_value_{d} {s} ?", .{ idx, self.last_op.symbol() });
+                }
+            }
+        }
+    };
+}
+
+fn OptionalRangeFmt(comptime PartialSortKey: type) type {
+    return struct {
+        range: ?CursorRange(PartialSortKey),
+
+        pub fn format(
+            self: @This(),
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            if (self.range) |r| {
+                try writer.print("AND {}", .{r});
+            }
+        }
     };
 }
 
