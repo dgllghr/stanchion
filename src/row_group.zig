@@ -779,7 +779,7 @@ test "row group: round trip" {
     const rowids = [_]i64{ 1, 2, 4, 3 };
 
     for (&table_values) |*row| {
-        _ = try pidx.insertInsertEntry(&arena, MemoryTuple{ .values = row });
+        _ = try pidx.insertPendingInsertEntry(&arena, MemoryTuple{ .values = row });
     }
 
     {

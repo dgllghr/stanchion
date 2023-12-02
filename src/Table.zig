@@ -245,10 +245,7 @@ pub fn update(
     change_set: ChangeSet,
 ) !void {
     if (change_set.changeType() == .Insert) {
-        rowid.* = self.primary_index.insertInsertEntry(
-            cb_ctx.arena,
-            change_set,
-        ) catch |e| {
+        rowid.* = self.primary_index.insertPendingInsertEntry(cb_ctx.arena, change_set) catch |e| {
             cb_ctx.setErrorMessage("failed insert insert entry: {any}", .{e});
             return e;
         };
