@@ -1,5 +1,6 @@
 const std = @import("std");
 const debug = std.debug;
+const io = std.io;
 const math = std.math;
 const mem = std.mem;
 const Allocator = std.mem.Allocator;
@@ -9,6 +10,7 @@ const Order = math.Order;
 
 const Blob = @import("sqlite3/Blob.zig");
 const BlobSlice = Blob.BlobSlice;
+const SqliteError = @import("sqlite3/errors.zig").Error;
 const ValueType = @import("sqlite3/value.zig").ValueType;
 
 const schema_mod = @import("schema.zig");
@@ -174,59 +176,69 @@ pub const Plan = struct {
 /// an error, the segment is possibly in an invalid state. Call `free` to release all
 /// segment resources.
 pub const Writer = struct {
-    const Self = @This();
-
     handle: Handle,
     present: ?StripeWriter(stripe.Bool.Encoder),
     length: ?StripeWriter(stripe.Int.Encoder),
     primary: ?StripeWriter(PrimaryEncoder),
 
+    const Self = @This();
+
+    const BufferedBlobWriter = io.BufferedWriter(4096, Blob.BlobWriter(BlobSlice(Blob)).Writer);
+
     fn StripeWriter(comptime Encoder: type) type {
         return struct {
-            blob: BlobSlice(Blob),
+            /// It is necessary to store this as a field because the `writer` field references it
+            blob_writer: Blob.BlobWriter(BlobSlice(Blob)),
+            /// References `blob_writer`
+            buf_writer: BufferedBlobWriter,
             encoder: Encoder,
+
+            fn init(self: *@This(), slice: BlobSlice(Blob), encoder: Encoder) void {
+                self.blob_writer = slice.writer();
+                self.buf_writer = io.bufferedWriter(self.blob_writer.writer());
+                self.encoder = encoder;
+            }
+
+            fn writer(self: *@This()) BufferedBlobWriter.Writer {
+                return self.buf_writer.writer();
+            }
         };
     }
 
     /// Creates an empty segment and initializes the writer to write to that segment
-    pub fn allocate(tmp_arena: *ArenaAllocator, db: *Db, plan: Plan) !Self {
+    pub fn openCreate(self: *Self, tmp_arena: *ArenaAllocator, db: *Db, plan: Plan) !void {
         const len = Header.encoded_len + plan.header.totalStripesLen();
-        var handle = try db.allocate(tmp_arena, len);
-        errdefer db.free(tmp_arena, handle) catch {};
-        try plan.header.write(&handle.blob);
+        self.handle = try db.allocate(tmp_arena, len);
+        errdefer db.free(tmp_arena, self.handle) catch {};
+        try plan.header.write(&self.handle.blob);
 
-        var present: ?StripeWriter(stripe.Bool.Encoder) = null;
-        var length: ?StripeWriter(stripe.Int.Encoder) = null;
-        var primary: ?StripeWriter(PrimaryEncoder) = null;
+        // In `StripeWriter`, the `writer` field references the `blob_writer` field, so initialize
+        // the writers so that `blob_writer` stays in-place in memory
 
         var offset: u32 = Header.encoded_len;
         if (plan.present) |e| {
-            present = .{
-                .blob = handle.blob.sliceFrom(offset),
-                .encoder = e,
-            };
+            self.present = .{ .blob_writer = undefined, .buf_writer = undefined, .encoder = undefined };
+            self.present.?.init(self.handle.blob.sliceFrom(offset), e);
             offset += plan.header.present_stripe.byte_len;
-        }
-        if (plan.length) |e| {
-            length = .{
-                .blob = handle.blob.sliceFrom(offset),
-                .encoder = e,
-            };
-            offset += plan.header.length_stripe.byte_len;
-        }
-        if (plan.primary) |e| {
-            primary = .{
-                .blob = handle.blob.sliceFrom(offset),
-                .encoder = e,
-            };
+        } else {
+            self.present = null;
         }
 
-        return .{
-            .handle = handle,
-            .present = present,
-            .length = length,
-            .primary = primary,
-        };
+        if (plan.length) |e| {
+            self.length = .{ .blob_writer = undefined, .buf_writer = undefined, .encoder = undefined };
+            self.length.?.init(self.handle.blob.sliceFrom(offset), e);
+            offset += plan.header.length_stripe.byte_len;
+        } else {
+            self.length = null;
+        }
+
+        if (plan.primary) |e| {
+            self.primary = .{ .blob_writer = undefined, .buf_writer = undefined, .encoder = undefined };
+            self.primary.?.init(self.handle.blob.sliceFrom(offset), e);
+            offset += plan.header.present_stripe.byte_len;
+        } else {
+            self.primary = null;
+        }
     }
 
     /// If an error is returned, the Writer can no longer be used and the blob must be
@@ -236,17 +248,17 @@ pub const Writer = struct {
         // are done and `write` does not need to be called at all.
         var cont = false;
         if (self.present) |*s| {
-            const c = try s.encoder.begin(&s.blob);
+            const c = try s.encoder.begin(s.writer());
             cont = cont or c;
         }
         if (self.length) |*s| {
-            const c = try s.encoder.begin(&s.blob);
+            const c = try s.encoder.begin(s.writer());
             cont = cont or c;
         }
         if (self.primary) |*s| {
             switch (s.encoder) {
                 inline else => |*e| {
-                    const c = try e.begin(&s.blob);
+                    const c = try e.begin(s.writer());
                     cont = cont or c;
                 },
             }
@@ -261,48 +273,48 @@ pub const Writer = struct {
         const value_type = value.valueType();
 
         if (value_type == .Null) {
-            try self.present.?.encoder.write(&self.present.?.blob, false);
+            try self.present.?.encoder.write(self.present.?.writer(), false);
             return;
         }
 
         if (self.present) |*present| {
-            try present.encoder.write(present.blob, true);
+            try present.encoder.write(present.writer(), true);
         }
 
         if (self.primary) |*primary| {
             switch (primary.encoder) {
-                .Bool => |*e| try e.write(&primary.blob, value.asBool()),
-                .Int => |*e| try e.write(&primary.blob, value.asI64()),
-                .Float => |*e| try e.write(&primary.blob, value.asF64()),
+                .Bool => |*e| try e.write(primary.writer(), value.asBool()),
+                .Int => |*e| try e.write(primary.writer(), value.asI64()),
+                .Float => |*e| try e.write(primary.writer(), value.asF64()),
                 .Byte => |*byte_encoder| {
                     const bytes =
                         if (value_type == .Text) value.asText() else value.asBlob();
                     var length = &self.length.?;
-                    try length.encoder.write(
-                        &length.blob,
-                        @as(i64, @intCast(bytes.len)),
-                    );
+                    try length.encoder.write(length.writer(), @as(i64, @intCast(bytes.len)));
                     for (bytes) |b| {
-                        try byte_encoder.write(&primary.blob, b);
+                        try byte_encoder.write(primary.writer(), b);
                     }
                 },
             }
         }
     }
 
-    /// If an error is returned, the Writer can no longer be used and the blob must be
-    /// freed using the `handle`.
+    /// If an error is returned, the Writer can no longer be used and the blob must be freed using
+    /// the `handle`.
     pub fn end(self: *Self) !Handle {
         if (self.present) |*present| {
-            try present.encoder.end(&present.blob);
+            try present.encoder.end(present.writer());
+            try present.buf_writer.flush();
         }
         if (self.length) |*length| {
-            try length.encoder.end(&length.blob);
+            try length.encoder.end(length.writer());
+            try length.buf_writer.flush();
         }
         if (self.primary) |*primary| {
             switch (primary.encoder) {
-                inline else => |*e| try e.end(&primary.blob),
+                inline else => |*e| try e.end(primary.writer()),
             }
+            try primary.buf_writer.flush();
         }
         return self.handle;
     }
@@ -366,7 +378,10 @@ test "segment writer" {
     try Db.createTable(&arena, conn, "test");
     var db = try Db.init(&arena, conn, "test");
     defer db.deinit();
-    var writer = try Writer.allocate(&arena, &db, plan);
+
+    var writer = try arena.allocator().create(Writer);
+    try writer.openCreate(&arena, &db, plan);
+    //var writer = try Writer.allocate(&arena, &db, plan);
     errdefer db.free(&arena, writer.handle) catch {};
 
     const cont = try writer.begin();
@@ -608,7 +623,8 @@ test "segment reader" {
     try Db.createTable(&arena, conn, "test");
     var db = try Db.init(&arena, conn, "test");
     defer db.deinit();
-    var writer = try Writer.allocate(&arena, &db, plan);
+    var writer = try arena.allocator().create(Writer);
+    try writer.openCreate(&arena, &db, plan);
     defer db.free(&arena, writer.handle) catch {};
 
     const cont = try writer.begin();

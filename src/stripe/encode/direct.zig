@@ -44,12 +44,10 @@ pub fn Encoder(
     return struct {
         const Self = @This();
 
-        count: usize,
-
         const Value = V;
 
         pub fn init() Self {
-            return .{ .count = 0 };
+            return .{};
         }
 
         pub fn deinit(_: *Self) void {}
@@ -58,10 +56,9 @@ pub fn Encoder(
             return true;
         }
 
-        pub fn write(self: *Self, blob: anytype, value: Value) !void {
+        pub fn write(_: *Self, writer: anytype, value: Value) !void {
             const buf = toBytes(value);
-            try blob.writeAt(buf[0..], self.count * @sizeOf(V));
-            self.count += 1;
+            try writer.writeAll(buf[0..]);
         }
 
         pub fn end(_: *Self, _: anytype) !void {}
@@ -106,8 +103,7 @@ pub fn Decoder(
             try blob.readAt(bytes_dest[0..], self.index * @sizeOf(Value));
             for (dst, 0..) |*v, idx| {
                 const start = idx * @sizeOf(Value);
-                v.* = fromBytes(@as(*const [@sizeOf(Value)]u8,
-                    @ptrCast(bytes_dest[start..(start + @sizeOf(Value))])));
+                v.* = fromBytes(@as(*const [@sizeOf(Value)]u8, @ptrCast(bytes_dest[start..(start + @sizeOf(Value))])));
             }
         }
     };

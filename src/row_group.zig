@@ -354,7 +354,7 @@ pub const Creator = struct {
 
         // Init rowid segment writer
 
-        self.rowid_segment_writer = try SegmentWriter.allocate(
+        try self.rowid_segment_writer.openCreate(
             tmp_arena,
             self.segment_db,
             try self.rowid_segment_planner.end(),
@@ -371,7 +371,7 @@ pub const Creator = struct {
             self.column_segment_writers[idx].handle.close();
         };
         for (self.column_segment_writers, 0..) |*writer, idx| {
-            writer.* = try SegmentWriter.allocate(
+            try writer.openCreate(
                 tmp_arena,
                 self.segment_db,
                 try self.column_segment_planners[idx].end(),
@@ -875,7 +875,7 @@ pub fn benchRowGroupCreate() !void {
     const start_insert = std.time.microTimestamp();
     for (0..row_group_len) |_| {
         var row = randomRow(&prng);
-        _ = try pidx.insertInsertEntry(&arena, MemoryTuple{ .values = &row });
+        _ = try pidx.insertPendingInsertEntry(&arena, MemoryTuple{ .values = &row });
     }
     try conn.exec("COMMIT");
     const end_insert = std.time.microTimestamp();
@@ -916,7 +916,7 @@ pub fn benchRowGroupCreate() !void {
     try conn.exec("BEGIN");
     for (0..(row_group_len * 3)) |_| {
         var row = randomRow(&prng);
-        _ = try pidx.insertInsertEntry(&arena, MemoryTuple{ .values = &row });
+        _ = try pidx.insertPendingInsertEntry(&arena, MemoryTuple{ .values = &row });
     }
     try conn.exec("COMMIT");
 

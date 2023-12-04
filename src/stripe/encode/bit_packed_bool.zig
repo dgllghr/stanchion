@@ -49,12 +49,11 @@ pub const Encoder = struct {
 
     word: Word,
     bit_index: BitIndexInt,
-    word_index: usize,
 
     const Value = bool;
 
     fn init() Self {
-        return .{ .word = 0, .bit_index = 0, .word_index = 0 };
+        return .{ .word = 0, .bit_index = 0 };
     }
 
     pub fn deinit(_: *Self) void {}
@@ -64,26 +63,21 @@ pub const Encoder = struct {
         return true;
     }
 
-    pub fn write(self: *Self, blob: anytype, value: Value) !void {
+    pub fn write(self: *Self, writer: anytype, value: Value) !void {
         if (value) {
             self.word |= @as(Word, 1) << self.bit_index;
         }
         self.bit_index += 1;
         if (self.bit_index >= @bitSizeOf(Word)) {
-            var buf: [@sizeOf(Word)]u8 = undefined;
-            mem.writeInt(Word, &buf, self.word, .little);
-            try blob.writeAt(&buf, self.word_index * @sizeOf(Word));
+            try writer.writeInt(Word, self.word, .little);
             self.word = 0;
             self.bit_index = 0;
-            self.word_index += 1;
         }
     }
 
-    pub fn end(self: *Self, blob: anytype) !void {
+    pub fn end(self: *Self, writer: anytype) !void {
         if (self.bit_index > 0) {
-            var buf: [@sizeOf(Word)]u8 = undefined;
-            mem.writeInt(Word, &buf, self.word, .little);
-            try blob.writeAt(&buf, self.word_index * @sizeOf(Word));
+            try writer.writeInt(Word, self.word, .little);
         }
     }
 };

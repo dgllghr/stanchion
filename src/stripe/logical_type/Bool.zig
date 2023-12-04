@@ -31,21 +31,21 @@ pub const Encoder = union(Tag) {
         }
     }
 
-    pub fn begin(self: *Self, blob: anytype) !bool {
+    pub fn begin(self: *Self, writer: anytype) !bool {
         switch (self.*) {
-            inline else => |*e| return e.begin(blob),
+            inline else => |*e| return e.begin(writer),
         }
     }
 
-    pub fn write(self: *Self, blob: anytype, value: Value) !void {
+    pub fn write(self: *Self, writer: anytype, value: Value) !void {
         switch (self.*) {
-            inline else => |*e| try e.write(blob, value),
+            inline else => |*e| try e.write(writer, value),
         }
     }
 
-    pub fn end(self: *Self, blob: anytype) !void {
+    pub fn end(self: *Self, writer: anytype) !void {
         switch (self.*) {
-            inline else => |*e| try e.end(blob),
+            inline else => |*e| try e.end(writer),
         }
     }
 };

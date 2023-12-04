@@ -1,3 +1,6 @@
+const std = @import("std");
+const io = std.io;
+
 const c = @import("c.zig").c;
 const errors = @import("errors.zig");
 const Conn = @import("Conn.zig");
@@ -76,6 +79,37 @@ pub fn BlobSlice(comptime Blob: type) type {
 
         pub fn sliceFrom(self: @This(), from: u32) BlobSlice(Blob) {
             return .{ .blob = self.blob, .from = self.from + from };
+        }
+
+        pub fn writer(self: @This()) BlobWriter(@This()) {
+            return BlobWriter(@This()).init(self);
+        }
+    };
+}
+
+pub fn writer(self: Self) BlobWriter(Self) {
+    return BlobWriter(Self).init(self);
+}
+
+pub fn BlobWriter(comptime Blob: type) type {
+    return struct {
+        blob: Blob,
+        offset: usize,
+
+        pub fn init(blob: Blob) @This() {
+            return .{ .blob = blob, .offset = 0 };
+        }
+
+        pub fn write(self: *@This(), data: []const u8) errors.Error!usize {
+            try self.blob.writeAt(data, self.offset);
+            self.offset += data.len;
+            return data.len;
+        }
+
+        pub const Writer = io.Writer(*@This(), errors.Error, write);
+
+        pub fn writer(self: *@This()) Writer {
+            return .{ .context = self };
         }
     };
 }

@@ -77,9 +77,9 @@ pub fn Encoder(
 
         pub fn deinit(_: *Self) void {}
 
-        pub fn begin(self: *Self, blob: anytype) !bool {
+        pub fn begin(self: *Self, writer: anytype) !bool {
             const buf = toBytes(self.value);
-            try blob.writeAt(buf[0..], 0);
+            try writer.writeAll(buf[0..]);
             return false;
         }
 
