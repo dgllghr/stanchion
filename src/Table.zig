@@ -381,8 +381,9 @@ pub fn bestIndex(
 }
 
 /// Constraint ops that are supported for row group elimination. Ops are sorted from most
-/// restrictive to least
-const supported_constraint_ops = [_]vtab.BestIndexInfo.Op{ .eq, .is, .gt, .lt, .le, .ge };
+/// restrictive to least, with a preference for `.lt` and `.le` because their cursor
+/// implementations are simpler
+const supported_constraint_ops = [_]vtab.BestIndexInfo.Op{ .eq, .is, .lt, .le, .gt, .ge };
 
 /// Constraint ops are ordered by restrictiveness so that the most restrictive op can be associated
 /// with a column. If the op is not supported, null is returned.

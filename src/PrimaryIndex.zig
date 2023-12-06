@@ -281,5 +281,5 @@ pub fn cursor(
     tmp_arena: *ArenaAllocator,
     range: ?CursorRange(PartialSortKey),
 ) !Cursor {
-    return cursors.open(PartialSortKey, &self.ctx, tmp_arena, range);
+    return cursors.open(PartialSortKey, tmp_arena, &self.ctx, range);
 }
