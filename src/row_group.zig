@@ -760,7 +760,7 @@ test "row group: round trip" {
     });
     const schema = try Schema.create(&arena, &arena, &schema_db, schema_def);
 
-    var pidx = try PrimaryIndex.create(&arena, conn, table_name, &schema);
+    var pidx = try PrimaryIndex.create(&arena, &arena, conn, table_name, &schema);
 
     var table_values = [_][3]MemoryValue{
         .{

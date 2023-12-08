@@ -8,7 +8,9 @@ const Stmt = @import("../sqlite3/Stmt.zig");
 const ValueRef = @import("../sqlite3/value.zig").Ref;
 const stmt_cell = @import("../stmt_cell.zig");
 
-const Schema = @import("../schema.zig").Schema;
+const schema_mod = @import("../schema.zig");
+const DataType = schema_mod.ColumnType.DataType;
+const Schema = schema_mod.Schema;
 
 const sql_fmt = @import("sql_fmt.zig");
 const pending_inserts = @import("pending_inserts.zig");
@@ -22,12 +24,14 @@ const StmtCell = stmt_cell.StmtCell(Ctx);
 
 pub const Entries = struct {
     insert_entry: StmtCell,
+    insert_pending_insert_entry: StmtCell,
     delete_range: StmtCell,
     delete_range_from: StmtCell,
 
     pub fn init() Entries {
         return .{
             .insert_entry = StmtCell.init(&insertEntryDml),
+            .insert_pending_insert_entry = StmtCell.init(&insertPendingInsertEntryDml),
             .delete_range = StmtCell.init(&deleteRangeDml),
             .delete_range_from = StmtCell.init(&deleteRangeFromDml),
         };
@@ -35,6 +39,7 @@ pub const Entries = struct {
 
     pub fn deinit(self: *Entries) void {
         self.insert_entry.deinit();
+        self.insert_pending_insert_entry.deinit();
         self.delete_range.deinit();
         self.delete_range_from.deinit();
     }
@@ -94,6 +99,19 @@ pub const Entries = struct {
         try stmt.exec();
     }
 
+    fn insertEntryDml(ctx: *const Ctx, arena: *ArenaAllocator) ![]const u8 {
+        return fmt.allocPrintZ(arena.allocator(),
+            \\INSERT INTO "{s}_primaryindex" (
+            \\  entry_type, record_count, rowid, col_rowid, {s}, {s}
+            \\) VALUES (?, ?, ?, ?, {s})
+        , .{
+            ctx.vtab_table_name,
+            sql_fmt.ColumnListFormatter("sk_value_{d}"){ .len = ctx.sort_key.len },
+            sql_fmt.ColumnListFormatter("col_{d}"){ .len = ctx.columns_len },
+            sql_fmt.ParameterListFormatter{ .len = ctx.columns_len + ctx.sort_key.len },
+        });
+    }
+
     pub fn insertPendingInsert(
         self: *Entries,
         tmp_arena: *ArenaAllocator,
@@ -102,8 +120,8 @@ pub const Entries = struct {
         values: anytype,
     ) !i64 {
         const rowid = table_state.getAndIncrNextRowid();
-        const stmt = try self.insert_entry.getStmt(tmp_arena, ctx);
-        defer self.insert_entry.reset();
+        const stmt = try self.insert_pending_insert_entry.getStmt(tmp_arena, ctx);
+        defer self.insert_pending_insert_entry.reset();
 
         try EntryType.Insert.bind(stmt, 1);
         try stmt.bindNull(2);
@@ -125,18 +143,38 @@ pub const Entries = struct {
         return rowid;
     }
 
-    fn insertEntryDml(ctx: *const Ctx, arena: *ArenaAllocator) ![]const u8 {
+    fn insertPendingInsertEntryDml(ctx: *const Ctx, arena: *ArenaAllocator) ![]const u8 {
         return fmt.allocPrintZ(arena.allocator(),
             \\INSERT INTO "{s}_primaryindex" (
             \\  entry_type, record_count, rowid, col_rowid, {s}, {s}
-            \\) VALUES (?, ?, ?, ?, {s})
+            \\) VALUES (?, ?, ?, ?, {s}, {s})
         , .{
             ctx.vtab_table_name,
             sql_fmt.ColumnListFormatter("sk_value_{d}"){ .len = ctx.sort_key.len },
             sql_fmt.ColumnListFormatter("col_{d}"){ .len = ctx.columns_len },
-            sql_fmt.ParameterListFormatter{ .len = ctx.columns_len + ctx.sort_key.len },
+            sql_fmt.ParameterListFormatter{ .len = ctx.sort_key.len },
+            ParameterListCastFormatter{ .data_types = ctx.column_data_types },
         });
     }
+
+    const ParameterListCastFormatter = struct {
+        data_types: []DataType,
+
+        pub fn format(
+            self: @This(),
+            comptime _: []const u8,
+            _: fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            for (self.data_types, 0..) |data_type, idx| {
+                if (idx > 0) {
+                    try writer.print(",", .{});
+                }
+                const formatter = DataType.SqliteFormatter{ .data_type = data_type };
+                try writer.print("CAST(? AS {})", .{formatter});
+            }
+        }
+    };
 
     pub fn deleteRange(
         self: *Entries,

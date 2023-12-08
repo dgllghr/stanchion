@@ -96,6 +96,7 @@ pub fn create(
     };
 
     self.primary_index = PrimaryIndex.create(
+        &self.table_static_arena,
         cb_ctx.arena,
         conn,
         self.name,
@@ -183,6 +184,7 @@ pub fn connect(
     };
 
     self.primary_index = PrimaryIndex.open(
+        &self.table_static_arena,
         cb_ctx.arena,
         conn,
         self.name,

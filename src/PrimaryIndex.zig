@@ -69,6 +69,7 @@ nodes: Nodes,
 table_state: TableState,
 
 pub fn create(
+    static_arena: *ArenaAllocator,
     tmp_arena: *ArenaAllocator,
     conn: Conn,
     vtab_table_name: []const u8,
@@ -81,7 +82,7 @@ pub fn create(
     const ddl = try fmt.allocPrintZ(tmp_arena.allocator(), "{s}", .{ddl_formatter});
     try conn.exec(ddl);
 
-    const ctx = Ctx.init(conn, vtab_table_name, schema);
+    const ctx = try Ctx.init(static_arena, conn, vtab_table_name, schema);
 
     var table_state = try TableState.init(tmp_arena, &ctx, schema, 1, 1);
     errdefer table_state.deinit();
@@ -150,12 +151,13 @@ const CreateTableDdlFormatter = struct {
 };
 
 pub fn open(
+    static_arena: *ArenaAllocator,
     tmp_arena: *ArenaAllocator,
     conn: Conn,
     vtab_table_name: []const u8,
     schema: *const Schema,
 ) !Self {
-    const ctx = Ctx.init(conn, vtab_table_name, schema);
+    const ctx = try Ctx.init(static_arena, conn, vtab_table_name, schema);
 
     var table_state = try TableState.init(tmp_arena, &ctx, schema, 0, 0);
     errdefer table_state.deinit();
