@@ -5,10 +5,10 @@ const meta = std.meta;
 const Allocator = std.mem.Allocator;
 const Order = math.Order;
 
-const Stmt = @import("sqlite3/Stmt.zig");
-const sqlite_value = @import("sqlite3/value.zig");
-const ValueType = sqlite_value.ValueType;
-const ValueRef = sqlite_value.Ref;
+const sqlite = @import("sqlite3.zig");
+const Stmt = sqlite.Stmt;
+const ValueType = sqlite.ValueType;
+const ValueRef = sqlite.ValueRef;
 
 const DataType = @import("schema.zig").ColumnType.DataType;
 

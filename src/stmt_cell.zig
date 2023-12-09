@@ -2,8 +2,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
-const Conn = @import("sqlite3/Conn.zig");
-const Stmt = @import("sqlite3/Stmt.zig");
+const sqlite = @import("sqlite3.zig");
+const Conn = sqlite.Conn;
+const Stmt = sqlite.Stmt;
 
 pub fn StmtCell(comptime Ctx: type) type {
     return struct {
@@ -11,7 +12,7 @@ pub fn StmtCell(comptime Ctx: type) type {
 
         /// Use an arena allocator so that the callback function can optionally allocate
         // (or not) and deallocation remains consistent
-        pub const InitSqlFn = fn(*const Ctx, *ArenaAllocator) Allocator.Error![]const u8;
+        pub const InitSqlFn = fn (*const Ctx, *ArenaAllocator) Allocator.Error![]const u8;
 
         stmt: ?Stmt,
         initSql: *const InitSqlFn,

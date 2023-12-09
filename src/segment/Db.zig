@@ -3,9 +3,10 @@ const fmt = std.fmt;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
-const Blob = @import("../sqlite3/Blob.zig");
-const Conn = @import("../sqlite3/Conn.zig");
-const Stmt = @import("../sqlite3/Stmt.zig");
+const sqlite = @import("../sqlite3.zig");
+const Blob = sqlite.Blob;
+const Conn = sqlite.Conn;
+const Stmt = sqlite.Stmt;
 
 const stmt_cell = @import("../stmt_cell.zig");
 

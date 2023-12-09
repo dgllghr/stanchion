@@ -4,13 +4,15 @@ const mem = std.mem;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
-const ChangeSet = @import("sqlite3/ChangeSet.zig");
-const Conn = @import("sqlite3/Conn.zig");
-const SqliteErorr = @import("sqlite3/errors.zig").Error;
-const Stmt = @import("sqlite3/Stmt.zig");
-const ValueRef = @import("sqlite3/value.zig").Ref;
-const vtab = @import("sqlite3/vtab.zig");
 const sqlite_c = @import("sqlite3/c.zig").c;
+const sqlite = @import("sqlite3.zig");
+const ChangeSet = sqlite.ChangeSet;
+const Conn = sqlite.Conn;
+const SqliteErorr = sqlite.errors.Error;
+const Stmt = sqlite.Stmt;
+const ValueType = sqlite.ValueType;
+const ValueRef = sqlite.ValueRef;
+const vtab = @import("sqlite3/vtab.zig");
 const Result = vtab.Result;
 
 const schema_mod = @import("schema.zig");

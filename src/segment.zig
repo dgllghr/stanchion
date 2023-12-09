@@ -8,10 +8,11 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const Order = math.Order;
 
-const Blob = @import("sqlite3/Blob.zig");
+const sqlite = @import("sqlite3.zig");
+const Blob = sqlite.Blob;
 const BlobSlice = Blob.BlobSlice;
-const SqliteError = @import("sqlite3/errors.zig").Error;
-const ValueType = @import("sqlite3/value.zig").ValueType;
+const SqliteError = sqlite.errors.Error;
+const ValueType = sqlite.ValueType;
 
 const schema_mod = @import("schema.zig");
 const ColumnType = schema_mod.ColumnType;

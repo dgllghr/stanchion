@@ -3,10 +3,10 @@ const Allocator = std.mem.Allocator;
 const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator;
 
 const c = @import("./sqlite3/c.zig").c;
-const sqlite_errors = @import("./sqlite3/errors.zig");
-const vtab = @import("./sqlite3/vtab.zig");
-
-const Conn = @import("./sqlite3/Conn.zig");
+const sqlite = @import("sqlite3.zig");
+const sqlite_errors = sqlite.errors;
+const vtab = sqlite.vtab;
+const Conn = sqlite.Conn;
 
 const Table = @import("./Table.zig");
 const StanchionVTab = vtab.VirtualTable(Table);

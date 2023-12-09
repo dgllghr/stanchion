@@ -1,0 +1,9 @@
+pub const errors = @import("sqlite3/errors.zig");
+pub const Blob = @import("sqlite3/Blob.zig");
+pub const ChangeSet = @import("sqlite3/ChangeSet.zig");
+pub const Conn = @import("sqlite3/Conn.zig");
+pub const Stmt = @import("sqlite3/Stmt.zig");
+const value = @import("sqlite3/value.zig");
+pub const ValueRef = value.Ref;
+pub const ValueType = value.ValueType;
+pub const vtab = @import("sqlite3/vtab.zig");

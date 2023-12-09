@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const c = @import("./sqlite3/c.zig").c;
-const BlobSlice = @import("./sqlite3/Blob.zig").BlobSlice;
+const BlobSlice = @import("./sqlite3.zig").Blob.BlobSlice;
 
 const Self = @This();
 

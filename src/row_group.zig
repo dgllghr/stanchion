@@ -5,7 +5,7 @@ const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const DynamicBitSetUnmanaged = std.bit_set.DynamicBitSetUnmanaged;
 const Order = std.math.Order;
 
-const ValueRef = @import("sqlite3/value.zig").Ref;
+const ValueRef = @import("sqlite3.zig").ValueRef;
 
 const schema_mod = @import("schema.zig");
 const ColumnType = schema_mod.ColumnType;
