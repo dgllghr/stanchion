@@ -665,7 +665,7 @@ fn dupeToSQLiteString(s: []const u8) [*c]const u8 {
     const len: c_int = @intCast(s.len);
     var buffer: [*c]u8 = @ptrCast(c.sqlite3_malloc(len + 1));
 
-    mem.copy(u8, buffer[0..s.len], s);
+    @memcpy(buffer[0..s.len], s);
     buffer[s.len] = 0;
 
     return buffer;
