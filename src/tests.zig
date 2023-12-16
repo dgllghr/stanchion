@@ -17,7 +17,7 @@ comptime {
 
     _ = @import("segment.zig");
 
-    _ = @import("PrimaryIndex.zig");
+    _ = @import("PendingInserts.zig");
     _ = @import("row_group.zig");
     _ = @import("Table.zig");
 }

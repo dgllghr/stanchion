@@ -84,11 +84,15 @@ A row group is made up of multiple segments. A segment contains data for a singl
 
 Each segment is composed of 1 or more stripes. A stripe is a chunk of data of the same type that is backed by a portion (slice) of the segment's `BLOB` value. A segment can contain the following stripes: present, primary, and length. When a segment contains null values, the primary stripe is used to indicate whether the value in each record is not `NULL`. For `BOOLEAN`, `INTEGER`, and `FLOAT` columns, the values are stored in the primary stripe. For `TEXT` and `BLOB` columns, the bytes of the values are stored in the primary stripe, and the length of each value is stored in the length stripe.
 
-### The primary index
+### Pending inserts
 
-The primary index is a persistent B+ Tree (read: row-oriented SQLite table) that indexes the row groups by the starting (min) sort key of each row group.
+When records are added to a stanchion table, they are inserted into a standard a persistent B+ Tree (read: native, row-oriented SQLite table) called the pending inserts table. Because it is a native sqlite table, records are stored row-oriented. They are sorted by the sort key so that they can be efficiently merged into row groups.
 
-The primary index also contains newly inserted records, which are called pending inserts. Pending inserts are sorted by the record's sort key along with the min sort keys of the indexed row groups. Row groups are created by merging runs of pending inserts within the primary index with the preceding row group.
+The reason that records are first stored in the pending inserts table is because creating a segment requires having all of the data that will go into the segment. When a segment is created, the encoding used depends on the values being stored in the segment, and not all encodings support being appened to efficiently. Additionally, greater compression can be achieved when the data exhibits patterns that can be exploited by encodings and there is more data per segment. The pending inserts table acts as a buffer where records are stored until there are enough records that it makes sense to create thes segments.
 
-When a query filters on sort key columns, Stanchion applies that filter to the primary index to restrict which row groups are accessed and which pending inserts are scanned. This is the only indexing mechanism currently supported by Stanchion.
+When a query filters on sort key columns, Stanchion applies that filter to the pending inserts directly to restrict which pending inserts are accessed. Filtering by sort key is the only indexing mechanism currently supported by Stanchion.
+
+### Row group index
+
+The row group index is a native, row-oriented SQLite table that indexes the row groups by the starting (min) sort key of each row group. When a query filters on sort key columns, Stanchion applies that filter to the primary index to restrict which row groups are accessed. Filtering by sort key is the only indexing mechanism currently supported by Stanchion.
 

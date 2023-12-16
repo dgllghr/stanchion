@@ -285,7 +285,7 @@ pub fn VirtualTable(comptime Table: type) type {
                 .xRowid = xRowid,
                 .xUpdate = xUpdate,
                 .xBegin = xBegin,
-                .xSync = null,
+                .xSync = xSync,
                 .xCommit = xCommit,
                 .xRollback = xRollback,
                 .xFindFunction = null,
@@ -312,7 +312,7 @@ pub fn VirtualTable(comptime Table: type) type {
                 .xRowid = xRowid,
                 .xUpdate = xUpdate,
                 .xBegin = xBegin,
-                .xSync = null,
+                .xSync = xSync,
                 .xCommit = xCommit,
                 .xRollback = xRollback,
                 .xFindFunction = null,
@@ -561,7 +561,7 @@ pub fn VirtualTable(comptime Table: type) type {
             const state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
             const result = Result{ .ctx = ctx };
             state.cursor.column(result, @intCast(n)) catch |e| {
-                std.log.err("error calling rowid on cursor: {any}", .{e});
+                std.log.err("error calling column on cursor: {any}", .{e});
                 return c.SQLITE_ERROR;
             };
             return c.SQLITE_OK;
@@ -588,6 +588,10 @@ pub fn VirtualTable(comptime Table: type) type {
 
         fn xBegin(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
             return callTableCallback("begin", Table.begin, .{}, vtab);
+        }
+
+        fn xSync(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
+            return callTableCallback("sync", Table.sync, .{}, vtab);
         }
 
         fn xCommit(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {

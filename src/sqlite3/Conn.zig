@@ -4,6 +4,9 @@
 //! `prepare` function. In cases where no parameters are passed and no results are
 //! returned, use the `exec` shortcut function.
 
+const std = @import("std");
+const mem = std.mem;
+
 const c = @import("c.zig").c;
 const errors = @import("errors.zig");
 const Stmt = @import("Stmt.zig");
@@ -56,4 +59,9 @@ pub fn exec(self: Self, sql: [*:0]const u8) !void {
     if (res != c.SQLITE_OK) {
         return errors.errorFromResultCode(res);
     }
+}
+
+pub fn lastErrMsg(self: Self) []const u8 {
+    const err_msg = c.sqlite3_errmsg(self.conn);
+    return mem.sliceTo(err_msg, 0);
 }

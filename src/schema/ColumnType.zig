@@ -1,4 +1,5 @@
 const std = @import("std");
+const debug = std.debug;
 const fmt = std.fmt;
 const mem = std.mem;
 
@@ -42,7 +43,7 @@ pub const DataType = enum {
             const str = switch (self.data_type) {
                 .Boolean => "INTEGER",
                 .Integer => "INTEGER",
-                .Float => "FLOAT",
+                .Float => "REAL",
                 .Text => "TEXT",
                 .Blob => "BLOB",
             };
@@ -54,23 +55,23 @@ pub const DataType = enum {
         switch (canonical[0]) {
             'B' => {
                 if (canonical[1] == 'O') {
-                    std.debug.assert(mem.eql(u8, "OLEAN", canonical[2..]));
+                    debug.assert(mem.eql(u8, "OLEAN", canonical[2..]));
                     return .Boolean;
                 } else {
-                    std.debug.assert(mem.eql(u8, "LOB", canonical[1..]));
+                    debug.assert(mem.eql(u8, "LOB", canonical[1..]));
                     return .Blob;
                 }
             },
             'I' => {
-                std.debug.assert(mem.eql(u8, "NTEGER", canonical[1..]));
+                debug.assert(mem.eql(u8, "NTEGER", canonical[1..]));
                 return .Integer;
             },
             'F' => {
-                std.debug.assert(mem.eql(u8, "LOAT", canonical[1..]));
+                debug.assert(mem.eql(u8, "LOAT", canonical[1..]));
                 return .Float;
             },
             'T' => {
-                std.debug.assert(mem.eql(u8, "EXT", canonical[1..]));
+                debug.assert(mem.eql(u8, "EXT", canonical[1..]));
                 return .Text;
             },
             else => unreachable,

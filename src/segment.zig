@@ -236,7 +236,6 @@ pub const Writer = struct {
         if (plan.primary) |e| {
             self.primary = .{ .blob_writer = undefined, .buf_writer = undefined, .encoder = undefined };
             self.primary.?.init(self.handle.blob.sliceFrom(offset), e);
-            offset += plan.header.present_stripe.byte_len;
         } else {
             self.primary = null;
         }

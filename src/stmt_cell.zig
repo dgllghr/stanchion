@@ -11,7 +11,7 @@ pub fn StmtCell(comptime Ctx: type) type {
         const Self = @This();
 
         /// Use an arena allocator so that the callback function can optionally allocate
-        // (or not) and deallocation remains consistent
+        /// (or not) and deallocation remains consistent
         pub const InitSqlFn = fn (*const Ctx, *ArenaAllocator) Allocator.Error![]const u8;
 
         stmt: ?Stmt,

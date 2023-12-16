@@ -21,9 +21,13 @@ const Schema = schema_mod.Schema;
 
 const segment = @import("segment.zig");
 
-const PrimaryIndex = @import("PrimaryIndex.zig");
+const CursorRange = @import("CursorRange.zig");
+
+const TableData = @import("TableData.zig");
+const PendingInserts = @import("PendingInserts.zig");
 const row_group = @import("row_group.zig");
 const RowGroupCreator = row_group.Creator;
+const RowGroupIndex = row_group.Index;
 
 const Self = @This();
 
@@ -36,8 +40,11 @@ db: struct {
 },
 name: []const u8,
 schema: Schema,
-primary_index: PrimaryIndex,
+table_data: TableData,
+row_group_index: RowGroupIndex,
+pending_inserts: PendingInserts,
 row_group_creator: RowGroupCreator,
+dirty: bool,
 
 pub const InitError = error{
     NoColumns,
@@ -97,29 +104,49 @@ pub fn create(
         return e;
     };
 
-    self.primary_index = PrimaryIndex.create(
-        &self.table_static_arena,
+    self.table_data = TableData.create(cb_ctx.arena, conn, self.name) catch |e| {
+        cb_ctx.setErrorMessage("error creating table data: {any}", .{e});
+        return e;
+    };
+    errdefer self.table_data.deinit();
+
+    self.row_group_index = RowGroupIndex.create(
         cb_ctx.arena,
         conn,
         self.name,
         &self.schema,
     ) catch |e| {
-        cb_ctx.setErrorMessage("error creating primary index: {any}", .{e});
+        cb_ctx.setErrorMessage("error creating row group index: {any}", .{e});
         return e;
     };
-    errdefer self.primary_index.deinit();
+    errdefer self.row_group_index.deinit();
+
+    self.pending_inserts = PendingInserts.create(
+        cb_ctx.arena,
+        conn,
+        self.name,
+        &self.schema,
+        &self.table_data,
+    ) catch |e| {
+        cb_ctx.setErrorMessage("error creating pending inserts: {any}", .{e});
+        return e;
+    };
+    errdefer self.pending_inserts.deinit();
 
     self.row_group_creator = RowGroupCreator.init(
         allocator,
         &self.table_static_arena,
         &self.db.segment,
         &self.schema,
-        &self.primary_index,
+        &self.row_group_index,
+        &self.pending_inserts,
         10_000,
     ) catch |e| {
         cb_ctx.setErrorMessage("error creating row group creator: {any}", .{e});
         return e;
     };
+
+    self.dirty = false;
 }
 
 test "create table" {
@@ -185,34 +212,48 @@ pub fn connect(
         return e;
     };
 
-    self.primary_index = PrimaryIndex.open(
-        &self.table_static_arena,
+    self.table_data = TableData.open(conn, self.name) catch |e| {
+        cb_ctx.setErrorMessage("error opening table data: {any}", .{e});
+        return e;
+    };
+    errdefer self.table_data.deinit();
+
+    self.row_group_index = RowGroupIndex.open(conn, self.name, &self.schema);
+    errdefer self.row_group_index.deinit();
+
+    self.pending_inserts = PendingInserts.open(
         cb_ctx.arena,
         conn,
         self.name,
         &self.schema,
+        &self.table_data,
     ) catch |e| {
-        cb_ctx.setErrorMessage("error opening primary index: {any}", .{e});
+        cb_ctx.setErrorMessage("error opening pending inserts: {any}", .{e});
         return e;
     };
-    errdefer self.primary_index.deinit();
+    errdefer self.pending_inserts.deinit();
 
     self.row_group_creator = RowGroupCreator.init(
         allocator,
         &self.table_static_arena,
         &self.db.segment,
         &self.schema,
-        &self.primary_index,
+        &self.row_group_index,
+        &self.pending_inserts,
         10_000,
     ) catch |e| {
         cb_ctx.setErrorMessage("error creating row group creator: {any}", .{e});
         return e;
     };
+
+    self.dirty = false;
 }
 
 pub fn disconnect(self: *Self) void {
     self.row_group_creator.deinit();
-    self.primary_index.deinit();
+    self.pending_inserts.deinit();
+    self.row_group_index.deinit();
+    self.table_data.deinit();
 
     self.db.segment.deinit();
     self.db.schema.deinit();
@@ -227,8 +268,14 @@ pub fn destroy(self: *Self, cb_ctx: *vtab.CallbackContext) void {
     self.db.segment.dropTable(cb_ctx.arena) catch |e| {
         std.log.err("failed to drop shadow table {s}_segments: {any}", .{ self.name, e });
     };
-    self.primary_index.drop(cb_ctx.arena) catch |e| {
-        std.log.err("failed to drop shadow table {s}_primaryindex: {any}", .{ self.name, e });
+    self.table_data.drop(cb_ctx.arena) catch |e| {
+        std.log.err("failed to drop shadow table {s}_tabledata: {any}", .{ self.name, e });
+    };
+    self.pending_inserts.drop(cb_ctx.arena) catch |e| {
+        std.log.err("failed to drop shadow table {s}_pendinginserts: {any}", .{ self.name, e });
+    };
+    self.row_group_index.drop(cb_ctx.arena) catch |e| {
+        std.log.err("failed to drop shadow table {s}_rowgroupindex: {any}", .{ self.name, e });
     };
 
     self.disconnect();
@@ -249,23 +296,12 @@ pub fn update(
     change_set: ChangeSet,
 ) !void {
     if (change_set.changeType() == .Insert) {
-        rowid.* = self.primary_index.insertPendingInsertEntry(cb_ctx.arena, change_set) catch |e| {
+        rowid.* = self.pending_inserts.insert(cb_ctx.arena, change_set) catch |e| {
             cb_ctx.setErrorMessage("failed insert insert entry: {any}", .{e});
             return e;
         };
 
-        // TODO do the following at end of transaction (requires tracking which row groups got
-        //      inserts)
-
-        var node = try self.primary_index.containingNodeHandle(
-            cb_ctx.arena,
-            change_set,
-            rowid.*,
-        );
-        defer node.deinit();
-
-        defer self.row_group_creator.reset();
-        _ = try self.row_group_creator.createN(cb_ctx.arena, node, 1);
+        self.dirty = true;
 
         return;
     }
@@ -399,34 +435,53 @@ pub fn begin(_: *Self, _: *vtab.CallbackContext) !void {
     std.log.debug("txn begin", .{});
 }
 
-pub fn commit(self: *Self, _: *vtab.CallbackContext) !void {
-    std.log.debug("txn commit", .{});
-    try self.primary_index.persistNextRowid();
+pub fn sync(self: *Self, cb_ctx: *vtab.CallbackContext) !void {
+    _ = cb_ctx;
+    _ = self;
 }
 
-pub fn rollback(self: *Self, _: *vtab.CallbackContext) !void {
+pub fn commit(self: *Self, cb_ctx: *vtab.CallbackContext) !void {
+    std.log.debug("txn commit", .{});
+    if (self.dirty) {
+        try self.pending_inserts.persistNextRowid(cb_ctx.arena);
+        // TODO should this be called in sync so that an error causes the transaction to be
+        //      aborted?
+        try self.row_group_creator.createAll(cb_ctx.arena);
+        self.dirty = false;
+    }
+}
+
+pub fn rollback(self: *Self, cb_ctx: *vtab.CallbackContext) !void {
     std.log.debug("txn rollback", .{});
-    try self.primary_index.loadNextRowid();
+    if (self.dirty) {
+        try self.pending_inserts.loadNextRowid(cb_ctx.arena);
+    }
 }
 
 pub fn savepoint(_: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !void {
     std.log.debug("txn savepoint {d} begin", .{savepoint_id});
 }
 
-pub fn release(self: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !void {
+pub fn release(self: *Self, cb_ctx: *vtab.CallbackContext, savepoint_id: i32) !void {
     std.log.debug("txn savepoint {d} release", .{savepoint_id});
-    try self.primary_index.persistNextRowid();
+    if (self.dirty) {
+        try self.pending_inserts.persistNextRowid(cb_ctx.arena);
+    }
 }
 
-pub fn rollbackTo(self: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !void {
+pub fn rollbackTo(self: *Self, cb_ctx: *vtab.CallbackContext, savepoint_id: i32) !void {
     std.log.debug("txn savepoint {d} rollback", .{savepoint_id});
-    try self.primary_index.loadNextRowid();
+    if (self.dirty) {
+        try self.pending_inserts.loadNextRowid(cb_ctx.arena);
+    }
 }
 
 const shadowNames = [_][:0]const u8{
+    "tabledata",
     "segments",
     "columns",
-    "primaryindex",
+    "rowgroupindex",
+    "pendinginserts",
 };
 
 pub fn isShadowName(name: [:0]const u8) bool {
@@ -448,39 +503,44 @@ pub fn open(
         self.allocator,
         &self.db.segment,
         &self.schema,
-        &self.primary_index,
+        &self.row_group_index,
+        &self.pending_inserts,
     );
 }
 
 pub const Cursor = struct {
-    primary_index: *PrimaryIndex,
+    row_group_index: *RowGroupIndex,
+    pend_inserts: *PendingInserts,
 
-    pidx_cursor: PrimaryIndex.Cursor,
+    rg_index_cursor: RowGroupIndex.EntriesCursor,
     rg_cursor: row_group.Cursor,
-    in_row_group: bool,
+    pend_inserts_cursor: PendingInserts.Cursor,
 
-    pidx_cursor_initialized: bool,
+    begun: bool,
 
     pub fn init(
         allocator: Allocator,
         segment_db: *segment.Db,
         schema: *const Schema,
-        primary_index: *PrimaryIndex,
+        row_group_index: *RowGroupIndex,
+        pend_inserts: *PendingInserts,
     ) !Cursor {
         const rg_cursor = try row_group.Cursor.init(allocator, segment_db, schema);
         return .{
-            .primary_index = primary_index,
-            .pidx_cursor = undefined,
+            .row_group_index = row_group_index,
+            .pend_inserts = pend_inserts,
+            .rg_index_cursor = undefined,
             .rg_cursor = rg_cursor,
-            .in_row_group = false,
-            .pidx_cursor_initialized = false,
+            .pend_inserts_cursor = undefined,
+            .begun = false,
         };
     }
 
     pub fn deinit(self: *Cursor) void {
         self.rg_cursor.deinit();
-        if (self.pidx_cursor_initialized) {
-            self.pidx_cursor.deinit();
+        if (self.begun) {
+            self.pend_inserts_cursor.deinit();
+            self.rg_index_cursor.deinit();
         }
     }
 
@@ -492,6 +552,7 @@ pub const Cursor = struct {
         filter_args: vtab.FilterArgs,
     ) !void {
         std.log.debug("index num: {}", .{index_id_num});
+
         const index_code_num = index_id_num & 0xFF;
         if (std.meta.intToEnum(IndexCode, index_code_num)) |index_code| {
             std.debug.assert(filter_args.valuesLen() > 0);
@@ -499,79 +560,72 @@ pub const Cursor = struct {
             std.log.debug("filtering with index: {} {}", .{ index_code, last_op });
             std.log.debug("filtering args: {}", .{filter_args.valuesLen()});
 
-            const range = PrimaryIndex.CursorRange(vtab.FilterArgs){
-                .key = filter_args,
-                .last_op = switch (last_op) {
-                    .eq => .eq,
-                    .gt => .gt,
-                    .ge => .ge,
-                    .lt => .lt,
-                    .le => .le,
-                    else => unreachable,
-                },
-            };
+            const cursor_range = CursorRange.init(filter_args, last_op);
 
-            self.pidx_cursor = try self.primary_index.cursor(
-                vtab.FilterArgs,
+            self.rg_index_cursor = try self.row_group_index.cursorPartial(
                 cb_ctx.arena,
-                range,
+                cursor_range,
             );
-            self.pidx_cursor_initialized = true;
+            self.pend_inserts_cursor = try self.pend_inserts.cursorPartial(
+                cb_ctx.arena,
+                cursor_range,
+            );
         } else |_| {
             std.log.debug("doing table scan", .{});
-            self.pidx_cursor = try self.primary_index.cursor(
-                vtab.FilterArgs,
-                cb_ctx.arena,
-                null,
-            );
-            self.pidx_cursor_initialized = true;
+
+            self.rg_index_cursor = try self.row_group_index.cursor(cb_ctx.arena);
+            self.pend_inserts_cursor = try self.pend_inserts.cursor(cb_ctx.arena);
         }
 
-        try self.next();
+        if (!self.rg_index_cursor.eof()) {
+            self.rg_index_cursor.readEntry(self.rg_cursor.rowGroup());
+        }
+
+        self.begun = true;
     }
 
     pub fn eof(self: *Cursor) bool {
-        return self.pidx_cursor.eof;
+        return self.rg_index_cursor.eof() and self.pend_inserts_cursor.eof();
     }
 
     pub fn next(self: *Cursor) !void {
-        if (self.in_row_group) {
+        if (!self.rg_cursor.eof()) {
             try self.rg_cursor.next();
             if (!self.rg_cursor.eof()) {
                 return;
             }
-            self.in_row_group = false;
         }
 
-        try self.pidx_cursor.next();
-        if (!self.pidx_cursor.eof) {
-            if (self.pidx_cursor.entryType() == .RowGroup) {
+        if (!self.rg_index_cursor.eof()) {
+            try self.rg_index_cursor.next();
+            if (!self.rg_index_cursor.eof()) {
                 self.rg_cursor.reset();
                 // Read the row group into the rg_cursor
-                try self.pidx_cursor.readRowGroupEntry(self.rg_cursor.rowGroup());
-                self.in_row_group = true;
+                self.rg_index_cursor.readEntry(self.rg_cursor.rowGroup());
             }
             return;
         }
+
+        try self.pend_inserts_cursor.next();
     }
 
     pub fn rowid(self: *Cursor) !i64 {
-        if (self.in_row_group) {
-            const value = try self.rg_cursor.readRowid();
+        if (self.rg_index_cursor.eof()) {
+            const value = try self.pend_inserts_cursor.readRowid();
             return value.asI64();
         }
-        const value = try self.pidx_cursor.readRowid();
+
+        const value = try self.rg_cursor.readRowid();
         return value.asI64();
     }
 
     pub fn column(self: *Cursor, result: Result, col_idx: usize) !void {
-        // TODO make this more efficient by passing the result into the cursors
-        if (self.in_row_group) {
-            try self.rg_cursor.readInto(result, col_idx);
+        if (self.rg_index_cursor.eof()) {
+            const value = try self.pend_inserts_cursor.readValue(col_idx);
+            result.setSqliteValue(value);
             return;
         }
 
-        const value = try self.pidx_cursor.read(col_idx);
-        result.setSqliteValue(value);
+        try self.rg_cursor.readInto(result, col_idx);
     }
 };
