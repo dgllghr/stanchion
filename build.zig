@@ -15,36 +15,7 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const lib = b.addStaticLibrary(.{
-        .name = "stanchion",
-        // In this case the main source file is merely a path, however, in more
-        // complicated build scripts, this could be a generated file.
-        .root_source_file = .{ .path = "src/main.zig" },
-        .target = target,
-        .optimize = optimize,
-    });
-    lib.addCSourceFile(.{
-        .file = .{ .path = "src/sqlite3/c/sqlite3.c" },
-        .flags = &[_][]const u8{"-std=c99"},
-    });
-    // TODO remove when issue is resolved:
-    //      https://github.com/ziglang/zig/issues/15893
-    lib.addCSourceFile(.{
-        .file = .{ .path = "src/sqlite3/c/result-transient.c" },
-        .flags = &[_][]const u8{"-std=c99"},
-    });
-    lib.addIncludePath(.{ .path = "src/sqlite3/c" });
-    lib.linkLibC();
-    const lib_options = b.addOptions();
-    lib.addOptions("build_options", lib_options);
-    // TODO this assumes that a loadable extension that is statically linked still uses
-    //      the loadable extension API. Check this assumption
-    lib_options.addOption(bool, "loadable_extension", true);
-
-    // This declares intent for the library to be installed into the standard
-    // location when the user invokes the "install" step (the default step when
-    // running `zig build`).
-    b.installArtifact(lib);
+    // Loadable extension
 
     const loadable_ext = b.addSharedLibrary(.{
         .name = "stanchion",
@@ -71,8 +42,8 @@ pub fn build(b: *std.Build) void {
     const loadable_ext_build = b.step("ext", "Build the 'stanchion' sqlite loadable extension");
     loadable_ext_build.dependOn(&install_loadable_ext.step);
 
-    // Creates a step for unit testing. This only builds the test executable
-    // but does not run it.
+    // Unit tests
+
     const main_tests = b.addTest(.{
         .root_source_file = .{ .path = "src/tests.zig" },
         .target = target,
@@ -88,6 +59,21 @@ pub fn build(b: *std.Build) void {
     main_tests_options.addOption(bool, "loadable_extension", false);
 
     const run_main_tests = b.addRunArtifact(main_tests);
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_main_tests.step);
+
+    // Integration tests
+
+    const run_integration_tests = b.addSystemCommand(&[_][]const u8{
+        "bash", "test/runtest.sh",
+    });
+    // Build the loadable extension and then run the integration test script
+    // TODO build the loadable extension in one of the release modes
+    const integration_test_step = b.step("itest", "Run integration tests");
+    run_integration_tests.step.dependOn(&install_loadable_ext.step);
+    integration_test_step.dependOn(&run_integration_tests.step);
+
+    // Benchmarks
 
     const benches = b.addExecutable(.{
         .name = "stanchion_benches",
@@ -105,14 +91,6 @@ pub fn build(b: *std.Build) void {
     benches_options.addOption(bool, "loadable_extension", false);
 
     const run_benches = b.addRunArtifact(benches);
-
-    // This creates a build step. It will be visible in the `zig build --help` menu,
-    // and can be selected like this: `zig build test`
-    // This will evaluate the `test` step rather than the default, which is "install".
-    const test_step = b.step("test", "Run library tests");
-    test_step.dependOn(&run_main_tests.step);
-
-    // Benchmark build step
     const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&run_benches.step);
 }
