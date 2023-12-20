@@ -21,12 +21,15 @@ const ColumnType = schema_mod.ColumnType;
 const DataType = schema_mod.ColumnType.DataType;
 const Schema = schema_mod.Schema;
 
+const BlobManager = @import("BlobManager.zig");
+const BlobHandle = BlobManager.Handle;
+
 const segment = @import("segment.zig");
-const SegmentDb = segment.Db;
-const SegmentHandle = segment.Handle;
+const SegmentHandle = segment.Storage.Handle;
 const SegmentPlan = segment.Plan;
 const SegmentPlanner = segment.Planner;
 const SegmentReader = segment.Reader;
+const SegmentStorage = segment.Storage;
 const SegmentValue = segment.Value;
 const SegmentWriter = segment.Writer;
 
@@ -623,13 +626,15 @@ pub const Index = struct {
 pub const Creator = struct {
     columns_len: usize,
     sort_key: []const usize,
-    segment_db: *SegmentDb,
+    blob_manager: *BlobManager,
     row_group_index: *Index,
     pending_inserts: *PendingInserts,
 
     /// Stores the order that records go into the row group. True means read from pending inserts,
     /// false from the row group
     interleaving: DynamicBitSetUnmanaged,
+    rowid_seg_blob_handle: BlobHandle,
+    column_seg_blob_handles: []BlobHandle,
     rowid_segment_planner: SegmentPlanner,
     column_segment_planners: []SegmentPlanner,
     rowid_segment_writer: SegmentWriter,
@@ -645,11 +650,10 @@ pub const Creator = struct {
     pub fn init(
         allocator: Allocator,
         table_static_arena: *ArenaAllocator,
-        segment_db: *SegmentDb,
+        blob_manager: *BlobManager,
         schema: *const Schema,
         row_group_index: *Index,
         pending_inserts: *PendingInserts,
-        //primary_index: *PrimaryIndex,
         max_row_group_len: u32,
     ) !Creator {
         const columns_len = schema.columns.items.len;
@@ -661,6 +665,8 @@ pub const Creator = struct {
             max_row_group_len,
         );
         errdefer interleaving.deinit(static_allocator);
+
+        const column_seg_blob_handles = try static_allocator.alloc(BlobHandle, columns_len);
 
         const rowid_segment_planner = SegmentPlanner.init(ColumnType.Rowid);
         const planners = try static_allocator.alloc(SegmentPlanner, columns_len);
@@ -674,15 +680,17 @@ pub const Creator = struct {
             columns_len,
         );
 
-        const src_row_group_cursor = try Cursor.init(allocator, segment_db, schema);
+        const src_row_group_cursor = try Cursor.init(allocator, blob_manager, schema);
 
         return .{
             .columns_len = columns_len,
             .sort_key = schema.sort_key.items,
-            .segment_db = segment_db,
+            .blob_manager = blob_manager,
             .row_group_index = row_group_index,
             .pending_inserts = pending_inserts,
             .interleaving = interleaving,
+            .rowid_seg_blob_handle = undefined,
+            .column_seg_blob_handles = column_seg_blob_handles,
             .rowid_segment_planner = rowid_segment_planner,
             .column_segment_planners = planners,
             .rowid_segment_writer = undefined,
@@ -960,29 +968,33 @@ pub const Creator = struct {
 
         // Init rowid segment writer
 
-        try self.rowid_segment_writer.openCreate(
+        const rowid_segment_plan = try self.rowid_segment_planner.end();
+        self.rowid_seg_blob_handle = try self.blob_manager.create(
             tmp_arena,
-            self.segment_db,
-            try self.rowid_segment_planner.end(),
+            rowid_segment_plan.totalLen(),
         );
-        errdefer freeSegment(tmp_arena, self.segment_db, &self.rowid_segment_writer);
-        defer self.rowid_segment_writer.handle.close();
+        errdefer self.rowid_seg_blob_handle.tryDestroy(tmp_arena);
+        defer self.rowid_seg_blob_handle.tryClose();
+        try self.rowid_segment_writer.init(&self.rowid_seg_blob_handle, &rowid_segment_plan);
         const rowid_continue = try self.rowid_segment_writer.begin();
 
         var writer_idx: usize = 0;
-        errdefer for (0..writer_idx) |idx| {
-            freeSegment(tmp_arena, self.segment_db, &self.column_segment_writers[idx]);
+        errdefer for (self.column_seg_blob_handles[0..writer_idx]) |*handle| {
+            handle.tryDestroy(tmp_arena);
         };
-        defer for (0..writer_idx) |idx| {
-            self.column_segment_writers[idx].handle.close();
+        defer for (self.column_seg_blob_handles[0..writer_idx]) |*handle| {
+            handle.tryClose();
         };
-        for (self.column_segment_writers, 0..) |*writer, idx| {
-            try writer.openCreate(
-                tmp_arena,
-                self.segment_db,
-                try self.column_segment_planners[idx].end(),
-            );
+        for (
+            self.column_segment_planners,
+            self.column_seg_blob_handles,
+            self.column_segment_writers,
+            0..,
+        ) |*planner, *blob_handle, *writer, idx| {
+            const plan = try planner.end();
+            blob_handle.* = try self.blob_manager.create(tmp_arena, plan.totalLen());
             writer_idx += 1;
+            try writer.init(blob_handle, &plan);
             const cont = try writer.begin();
             self.writers_continue.setValue(idx, cont);
         }
@@ -1007,12 +1019,16 @@ pub const Creator = struct {
 
         // Finalize the writers
 
-        const rowid_handle = try self.rowid_segment_writer.end();
-        new_row_group.row_group_entry.rowid_segment_id = rowid_handle.id;
+        try self.rowid_segment_writer.end();
+        new_row_group.row_group_entry.rowid_segment_id = self.rowid_seg_blob_handle.id;
         const column_segment_ids = new_row_group.row_group_entry.column_segment_ids;
-        for (self.column_segment_writers, column_segment_ids) |*writer, *seg_id| {
-            const handle = try writer.end();
-            seg_id.* = handle.id;
+        for (
+            self.column_seg_blob_handles,
+            self.column_segment_writers,
+            column_segment_ids,
+        ) |*blob_handle, *writer, *seg_id| {
+            try writer.end();
+            seg_id.* = blob_handle.id;
         }
     }
 
@@ -1028,7 +1044,7 @@ pub const Creator = struct {
         const start_rowid = start_rowid_value.asI64();
         new_row_group.start_rowid = start_rowid;
 
-        self.rowid_segment_planner.next(start_rowid_value);
+        self.rowid_segment_planner.addNext(start_rowid_value);
 
         for (self.column_segment_planners, 0..) |*planner, idx| {
             const value = try row.readValue(idx);
@@ -1043,17 +1059,17 @@ pub const Creator = struct {
                     break;
                 }
             }
-            planner.next(value);
+            planner.addNext(value);
         }
     }
 
     fn planRow(self: *Creator, row: anytype) !void {
         const rowid = try row.readRowid();
-        self.rowid_segment_planner.next(rowid);
+        self.rowid_segment_planner.addNext(rowid);
 
         for (self.column_segment_planners, 0..) |*planner, idx| {
             const value = try row.readValue(idx);
-            planner.next(value);
+            planner.addNext(value);
         }
     }
 
@@ -1083,19 +1099,6 @@ pub const Creator = struct {
         const left_rowid = try left_row.readRowid();
         const right_rowid = try right_row.readRowid();
         return std.math.order(left_rowid.asI64(), right_rowid.asI64());
-    }
-
-    fn freeSegment(
-        tmp_arena: *ArenaAllocator,
-        segment_db: *SegmentDb,
-        writer: *SegmentWriter,
-    ) void {
-        segment_db.free(tmp_arena, writer.handle) catch |e| {
-            std.log.err(
-                "error freeing segment blob {d}: {any}",
-                .{ writer.handle.id, e },
-            );
-        };
     }
 };
 
@@ -1152,7 +1155,7 @@ fn Limiter(comptime Cur: type) type {
 }
 
 pub const Cursor = struct {
-    segment_db: *SegmentDb,
+    blob_manager: *BlobManager,
 
     /// Allocator used to allocate all memory for this cursor that is tied to the
     /// lifecycle of the cursor. This memory is allocated together when the cursor is
@@ -1164,6 +1167,9 @@ pub const Cursor = struct {
     /// Set `row_group` before iterating. Set the record count on `row_group` to 0 to
     /// make an empty cursor.
     row_group: Index.Entry,
+
+    rowid_blob_handle: BlobHandle,
+    segment_blob_handles: []BlobHandle,
 
     rowid_segment: ?SegmentReader,
     segments: []?SegmentReader,
@@ -1177,11 +1183,7 @@ pub const Cursor = struct {
 
     /// Initializes the row group cursor with an undefined row group. Set the row group
     /// before iterating
-    pub fn init(
-        allocator: Allocator,
-        segment_db: *SegmentDb,
-        schema: *const Schema,
-    ) !Self {
+    pub fn init(allocator: Allocator, blob_manager: *BlobManager, schema: *const Schema) !Self {
         const col_len = schema.columns.items.len;
 
         var arena = ArenaAllocator.init(allocator);
@@ -1196,6 +1198,7 @@ pub const Cursor = struct {
             .column_segment_ids = try arena.allocator().alloc(i64, col_len),
             .record_count = 0,
         };
+        const segment_blob_handles = try arena.allocator().alloc(BlobHandle, col_len);
         const segments = try arena.allocator().alloc(?SegmentReader, col_len);
         for (segments) |*seg| {
             seg.* = null;
@@ -1205,9 +1208,11 @@ pub const Cursor = struct {
 
         return .{
             .static_allocator = arena,
-            .segment_db = segment_db,
+            .blob_manager = blob_manager,
             .column_types = column_types,
             .row_group = row_group,
+            .rowid_blob_handle = undefined,
+            .segment_blob_handles = segment_blob_handles,
             .rowid_segment = null,
             .segments = segments,
             .value_allocator = value_allocator,
@@ -1216,12 +1221,12 @@ pub const Cursor = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        if (self.rowid_segment) |*s| {
-            s.handle.close();
+        if (self.rowid_segment) |_| {
+            self.rowid_blob_handle.tryClose();
         }
-        for (self.segments) |*seg| {
-            if (seg.*) |*s| {
-                s.handle.close();
+        for (self.segments, self.segment_blob_handles) |*seg, *blob_handle| {
+            if (seg.*) |_| {
+                blob_handle.tryClose();
             }
         }
         self.value_allocator.deinit();
@@ -1235,13 +1240,13 @@ pub const Cursor = struct {
     pub fn reset(self: *Self) void {
         self.index = 0;
 
-        if (self.rowid_segment) |*s| {
-            s.handle.close();
+        if (self.rowid_segment) |_| {
+            self.rowid_blob_handle.tryClose();
         }
         self.rowid_segment = null;
-        for (self.segments) |*seg| {
-            if (seg.*) |*s| {
-                s.handle.close();
+        for (self.segments, self.segment_blob_handles) |*seg, *blob_handle| {
+            if (seg.*) |_| {
+                blob_handle.tryClose();
             }
             seg.* = null;
         }
@@ -1313,12 +1318,15 @@ pub const Cursor = struct {
     }
 
     fn loadRowidSegment(self: *Self) !void {
+        self.rowid_blob_handle = try self.blob_manager.open(self.row_group.rowid_segment_id);
+        errdefer self.rowid_blob_handle.tryClose();
+
         const segment_reader = &self.rowid_segment;
-        segment_reader.* = try SegmentReader.open(
-            self.segment_db,
+        segment_reader.* = try SegmentReader.init(
+            &self.rowid_blob_handle,
             ColumnType.Rowid.data_type,
-            self.row_group.rowid_segment_id,
         );
+
         for (0..self.index) |_| {
             try segment_reader.*.?.next();
         }
@@ -1326,13 +1334,17 @@ pub const Cursor = struct {
 
     fn loadSegment(self: *Self, col_idx: usize) !void {
         const segment_id = self.row_group.column_segment_ids[col_idx];
+        const seg_blob_handle = &self.segment_blob_handles[col_idx];
+
+        seg_blob_handle.* = try self.blob_manager.open(segment_id);
+        errdefer seg_blob_handle.tryClose();
 
         const segment_reader = &self.segments[col_idx];
-        segment_reader.* = try SegmentReader.open(
-            self.segment_db,
+        segment_reader.* = try SegmentReader.init(
+            seg_blob_handle,
             self.column_types[col_idx].data_type,
-            segment_id,
         );
+
         for (0..self.index) |_| {
             try segment_reader.*.?.next();
         }
@@ -1358,9 +1370,8 @@ test "row group: create single from pending inserts" {
     var schema_db = schema_mod.Db.init(conn, table_name);
     defer schema_db.deinit();
 
-    try SegmentDb.createTable(&arena, conn, table_name);
-    var segment_db = try SegmentDb.init(&arena, conn, table_name);
-    defer segment_db.deinit();
+    var blob_manager = try BlobManager.init(&arena, &arena, conn, table_name);
+    defer blob_manager.deinit();
 
     const schema_def = try schema_mod.SchemaDef.parse(&arena, &[_][]const u8{
         "quadrant TEXT NOT NULL",
@@ -1416,7 +1427,7 @@ test "row group: create single from pending inserts" {
         var creator = try Creator.init(
             std.testing.allocator,
             &arena,
-            &segment_db,
+            &blob_manager,
             &schema,
             &row_group_index,
             &pending_inserts,
@@ -1433,7 +1444,7 @@ test "row group: create single from pending inserts" {
         _ = try creator.createSingle(&arena, &pend_inserts_cursor, &new_row_group);
     }
 
-    var cursor = try Cursor.init(arena.allocator(), &segment_db, &schema);
+    var cursor = try Cursor.init(arena.allocator(), &blob_manager, &schema);
     cursor.rowGroup().* = new_row_group.row_group_entry;
 
     var idx: usize = 0;
@@ -1470,9 +1481,8 @@ test "row group: create all" {
     var schema_db = schema_mod.Db.init(conn, table_name);
     defer schema_db.deinit();
 
-    try SegmentDb.createTable(&arena, conn, table_name);
-    var segment_db = try SegmentDb.init(&arena, conn, table_name);
-    defer segment_db.deinit();
+    var blob_manager = try BlobManager.init(&arena, &arena, conn, table_name);
+    defer blob_manager.deinit();
 
     const schema_def = try schema_mod.SchemaDef.parse(&arena, &[_][]const u8{
         "quadrant TEXT NOT NULL",
@@ -1521,7 +1531,7 @@ test "row group: create all" {
         var creator = try Creator.init(
             std.testing.allocator,
             &arena,
-            &segment_db,
+            &blob_manager,
             &schema,
             &row_group_index,
             &pending_inserts,
@@ -1532,7 +1542,7 @@ test "row group: create all" {
         try creator.createAll(&arena);
     }
 
-    var cursor = try Cursor.init(arena.allocator(), &segment_db, &schema);
+    var cursor = try Cursor.init(arena.allocator(), &blob_manager, &schema);
     var rg_index_cursor = try row_group_index.cursor(&arena);
     rg_index_cursor.readEntry(cursor.rowGroup());
 
@@ -1584,9 +1594,8 @@ pub fn benchRowGroupCreate() !void {
     var schema_db = schema_mod.Db.init(conn, table_name);
     defer schema_db.deinit();
 
-    try SegmentDb.createTable(&arena, conn, table_name);
-    var segment_db = try SegmentDb.init(&arena, conn, table_name);
-    defer segment_db.deinit();
+    var blob_manager = try BlobManager.init(&arena, &arena, conn, table_name);
+    defer blob_manager.deinit();
 
     const schema_def = try schema_mod.SchemaDef.parse(&arena, &[_][]const u8{
         "quadrant TEXT NOT NULL",
@@ -1637,7 +1646,7 @@ pub fn benchRowGroupCreate() !void {
             var creator = try Creator.init(
                 std.heap.page_allocator,
                 &arena,
-                &segment_db,
+                &blob_manager,
                 &schema,
                 &row_group_index,
                 &pending_inserts,
@@ -1669,7 +1678,7 @@ pub fn benchRowGroupCreate() !void {
             var creator = try Creator.init(
                 std.heap.page_allocator,
                 &arena,
-                &segment_db,
+                &blob_manager,
                 &schema,
                 &row_group_index,
                 &pending_inserts,

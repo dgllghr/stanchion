@@ -5,13 +5,13 @@ const stripe = @import("../stripe.zig");
 const Encoding = stripe.Encoding;
 const StripeMeta = stripe.Meta;
 
-const Self = @This();
-
 present_stripe: StripeMeta,
 length_stripe: StripeMeta,
 primary_stripe: StripeMeta,
 
-pub const encoded_len: usize = @divExact(@bitSizeOf(Self), 8) + 1;
+const Self = @This();
+
+pub const encoded_len: u32 = @divExact(@bitSizeOf(Self), 8) + 1;
 
 pub fn init() Self {
     return .{
@@ -66,4 +66,8 @@ fn writeStripeMeta(meta: StripeMeta, buf: []u8) void {
 pub fn totalStripesLen(self: Self) u32 {
     return self.present_stripe.byte_len + self.length_stripe.byte_len +
         self.primary_stripe.byte_len;
+}
+
+pub fn totalSegmentLen(self: Self) u32 {
+    return self.totalStripesLen() + encoded_len;
 }

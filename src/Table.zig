@@ -21,13 +21,13 @@ const Schema = schema_mod.Schema;
 
 const segment = @import("segment.zig");
 
-const CursorRange = @import("CursorRange.zig");
-
-const TableData = @import("TableData.zig");
-const PendingInserts = @import("PendingInserts.zig");
 const row_group = @import("row_group.zig");
+const BlobManager = @import("BlobManager.zig");
+const CursorRange = @import("CursorRange.zig");
+const PendingInserts = @import("PendingInserts.zig");
 const RowGroupCreator = row_group.Creator;
 const RowGroupIndex = row_group.Index;
+const TableData = @import("TableData.zig");
 
 const Self = @This();
 
@@ -36,11 +36,11 @@ allocator: Allocator,
 table_static_arena: ArenaAllocator,
 db: struct {
     schema: schema_mod.Db,
-    segment: segment.Db,
 },
 name: []const u8,
 schema: Schema,
 table_data: TableData,
+blob_manager: BlobManager,
 row_group_index: RowGroupIndex,
 pending_inserts: PendingInserts,
 row_group_creator: RowGroupCreator,
@@ -58,6 +58,8 @@ pub fn create(
     cb_ctx: *vtab.CallbackContext,
     args: []const []const u8,
 ) InitError!void {
+    // TODO wrap all of this in a savepoint
+
     if (args.len < 5) {
         cb_ctx.setErrorMessage("table must have at least 1 column", .{});
         return InitError.NoColumns;
@@ -86,12 +88,9 @@ pub fn create(
     self.name = try self.table_static_arena.allocator().dupe(u8, args[2]);
 
     try schema_mod.Db.createTable(cb_ctx.arena, conn, self.name);
-    try segment.Db.createTable(cb_ctx.arena, conn, self.name);
     self.db = .{
         .schema = schema_mod.Db.init(conn, self.name),
-        .segment = try segment.Db.init(&self.table_static_arena, conn, self.name),
     };
-    errdefer self.db.segment.deinit();
     errdefer self.db.schema.deinit();
 
     self.schema = Schema.create(
@@ -109,6 +108,17 @@ pub fn create(
         return e;
     };
     errdefer self.table_data.deinit();
+
+    self.blob_manager = BlobManager.init(
+        &self.table_static_arena,
+        cb_ctx.arena,
+        conn,
+        self.name,
+    ) catch |e| {
+        cb_ctx.setErrorMessage("error creating blob manager: {any}", .{e});
+        return e;
+    };
+    errdefer self.blob_manager.deinit();
 
     self.row_group_index = RowGroupIndex.create(
         cb_ctx.arena,
@@ -136,7 +146,7 @@ pub fn create(
     self.row_group_creator = RowGroupCreator.init(
         allocator,
         &self.table_static_arena,
-        &self.db.segment,
+        &self.blob_manager,
         &self.schema,
         &self.row_group_index,
         &self.pending_inserts,
@@ -179,6 +189,8 @@ pub fn connect(
     cb_ctx: *vtab.CallbackContext,
     args: []const []const u8,
 ) InitError!void {
+    // TODO wrap all of this in a savepoint
+
     if (args.len < 3) {
         cb_ctx.setErrorMessage("invalid arguments to vtab `connect`", .{});
         return InitError.NoColumns;
@@ -198,9 +210,7 @@ pub fn connect(
 
     self.db = .{
         .schema = schema_mod.Db.init(conn, self.name),
-        .segment = try segment.Db.init(&self.table_static_arena, conn, self.name),
     };
-    errdefer self.db.segment.deinit();
     errdefer self.db.schema.deinit();
 
     self.schema = Schema.load(
@@ -217,6 +227,17 @@ pub fn connect(
         return e;
     };
     errdefer self.table_data.deinit();
+
+    self.blob_manager = BlobManager.init(
+        &self.table_static_arena,
+        cb_ctx.arena,
+        conn,
+        self.name,
+    ) catch |e| {
+        cb_ctx.setErrorMessage("error creating blob manager: {any}", .{e});
+        return e;
+    };
+    errdefer self.blob_manager.deinit();
 
     self.row_group_index = RowGroupIndex.open(conn, self.name, &self.schema);
     errdefer self.row_group_index.deinit();
@@ -236,7 +257,7 @@ pub fn connect(
     self.row_group_creator = RowGroupCreator.init(
         allocator,
         &self.table_static_arena,
-        &self.db.segment,
+        &self.blob_manager,
         &self.schema,
         &self.row_group_index,
         &self.pending_inserts,
@@ -254,8 +275,8 @@ pub fn disconnect(self: *Self) void {
     self.pending_inserts.deinit();
     self.row_group_index.deinit();
     self.table_data.deinit();
+    self.blob_manager.deinit();
 
-    self.db.segment.deinit();
     self.db.schema.deinit();
 
     self.table_static_arena.deinit();
@@ -265,9 +286,6 @@ pub fn destroy(self: *Self, cb_ctx: *vtab.CallbackContext) void {
     self.db.schema.dropTable(cb_ctx.arena) catch |e| {
         std.log.err("failed to drop shadow table {s}_columns: {any}", .{ self.name, e });
     };
-    self.db.segment.dropTable(cb_ctx.arena) catch |e| {
-        std.log.err("failed to drop shadow table {s}_segments: {any}", .{ self.name, e });
-    };
     self.table_data.drop(cb_ctx.arena) catch |e| {
         std.log.err("failed to drop shadow table {s}_tabledata: {any}", .{ self.name, e });
     };
@@ -276,6 +294,9 @@ pub fn destroy(self: *Self, cb_ctx: *vtab.CallbackContext) void {
     };
     self.row_group_index.drop(cb_ctx.arena) catch |e| {
         std.log.err("failed to drop shadow table {s}_rowgroupindex: {any}", .{ self.name, e });
+    };
+    self.blob_manager.destroy(cb_ctx.arena) catch |e| {
+        std.log.err("failed to drop shadow table {s}_blobs: {any}", .{ self.name, e });
     };
 
     self.disconnect();
@@ -478,7 +499,7 @@ pub fn rollbackTo(self: *Self, cb_ctx: *vtab.CallbackContext, savepoint_id: i32)
 
 const shadowNames = [_][:0]const u8{
     "tabledata",
-    "segments",
+    "blobs",
     "columns",
     "rowgroupindex",
     "pendinginserts",
@@ -501,7 +522,7 @@ pub fn open(
     std.log.debug("open cursor", .{});
     return Cursor.init(
         self.allocator,
-        &self.db.segment,
+        &self.blob_manager,
         &self.schema,
         &self.row_group_index,
         &self.pending_inserts,
@@ -520,12 +541,12 @@ pub const Cursor = struct {
 
     pub fn init(
         allocator: Allocator,
-        segment_db: *segment.Db,
+        blob_manager: *BlobManager,
         schema: *const Schema,
         row_group_index: *RowGroupIndex,
         pend_inserts: *PendingInserts,
     ) !Cursor {
-        const rg_cursor = try row_group.Cursor.init(allocator, segment_db, schema);
+        const rg_cursor = try row_group.Cursor.init(allocator, blob_manager, schema);
         return .{
             .row_group_index = row_group_index,
             .pend_inserts = pend_inserts,
