@@ -73,13 +73,13 @@ const Self = @This();
 /// Initializes the row group cursor with an undefined row group. Set the row group before
 /// iterating
 pub fn init(allocator: Allocator, blob_manager: *BlobManager, schema: *const Schema) !Self {
-    const col_len = schema.columns.items.len;
+    const col_len = schema.columns.len;
 
     var arena = ArenaAllocator.init(allocator);
     errdefer arena.deinit();
 
     const column_types = try arena.allocator().alloc(ColumnType, col_len);
-    for (schema.columns.items, 0..) |*col, idx| {
+    for (schema.columns, 0..) |*col, idx| {
         column_types[idx] = col.column_type;
     }
     const row_group = .{

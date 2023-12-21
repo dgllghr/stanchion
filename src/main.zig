@@ -20,9 +20,8 @@ pub export fn sqlite3_stanchion_init(
 ) callconv(.C) c_int {
     c.sqlite3_api = api;
 
-    // To store data common to all table instances (global to the module), replace this
-    // allocator with a struct containing the common data (see `ModuleContext` in
-    // `zig-sqlite`)
+    // To store data common to all table instances (global to the module), replace this allocator
+    // with a struct containing the common data (see `ModuleContext` in `zig-sqlite`)
     allocator = GeneralPurposeAllocator(.{}){};
 
     const res = c.sqlite3_create_module_v2(

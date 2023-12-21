@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const ColumnType = @import("./ColumnType.zig");
+const ColumnType = @import("ColumnType.zig");
 
 rank: i32,
 name: []const u8,

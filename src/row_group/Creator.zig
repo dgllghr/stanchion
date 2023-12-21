@@ -75,11 +75,11 @@ pub fn init(
     pending_inserts: *PendingInserts,
     max_row_group_len: u32,
 ) !Self {
-    const columns_len = schema.columns.items.len;
+    const columns_len = schema.columns.len;
 
     const static_allocator = table_static_arena.allocator();
 
-    const pend_inserts_sk_buf = try static_allocator.alloc(MemoryValue, schema.sort_key.items.len);
+    const pend_inserts_sk_buf = try static_allocator.alloc(MemoryValue, schema.sort_key.len);
 
     var interleaving = try DynamicBitSetUnmanaged.initEmpty(
         static_allocator,
@@ -91,7 +91,7 @@ pub fn init(
 
     const rowid_segment_planner = SegmentPlanner.init(ColumnType.Rowid);
     const planners = try static_allocator.alloc(SegmentPlanner, columns_len);
-    for (planners, schema.columns.items) |*planner, *col| {
+    for (planners, schema.columns) |*planner, *col| {
         planner.* = SegmentPlanner.init(col.column_type);
     }
 
@@ -105,7 +105,7 @@ pub fn init(
 
     return .{
         .columns_len = columns_len,
-        .sort_key = schema.sort_key.items,
+        .sort_key = schema.sort_key,
         .blob_manager = blob_manager,
         .row_group_index = row_group_index,
         .pending_inserts = pending_inserts,
@@ -579,6 +579,7 @@ fn Limiter(comptime Cur: type) type {
 }
 
 test "row group: create single from pending inserts" {
+    const SchemaManager = @import("../schema.zig").Manager;
     const TableData = @import("../TableData.zig");
 
     const conn = try Conn.openInMemory();
@@ -589,20 +590,17 @@ test "row group: create single from pending inserts" {
 
     const table_name = "test";
 
-    try schema_mod.Db.createTable(&arena, conn, table_name);
-    var schema_db = schema_mod.Db.init(conn, table_name);
-    defer schema_db.deinit();
-
     var blob_manager = try BlobManager.init(&arena, &arena, conn, table_name);
     defer blob_manager.deinit();
 
+    var schema_mgr = try SchemaManager.init(&arena, conn, table_name);
     const schema_def = try schema_mod.SchemaDef.parse(&arena, &[_][]const u8{
         "quadrant TEXT NOT NULL",
         "sector INTEGER NOT NULL",
         "size INTEGER NOT NULL",
         "SORT KEY (quadrant, sector)",
     });
-    const schema = try Schema.create(&arena, &arena, &schema_db, schema_def);
+    const schema = try schema_mgr.create(&arena, &arena, &schema_def);
 
     var table_data = try TableData.create(&arena, conn, table_name);
     defer table_data.deinit();
@@ -642,9 +640,9 @@ test "row group: create single from pending inserts" {
     var new_row_group: Self.NewRowGroup = undefined;
     new_row_group.row_group_entry.record_count = 0;
     new_row_group.start_sort_key = try arena.allocator()
-        .alloc(MemoryValue, schema.sort_key.items.len);
+        .alloc(MemoryValue, schema.sort_key.len);
     new_row_group.row_group_entry.column_segment_ids = try arena.allocator()
-        .alloc(i64, schema.columns.items.len);
+        .alloc(i64, schema.columns.len);
 
     {
         var creator = try Self.init(
@@ -690,6 +688,7 @@ test "row group: create single from pending inserts" {
 }
 
 test "row group: create all" {
+    const SchemaManager = @import("../schema.zig").Manager;
     const TableData = @import("../TableData.zig");
 
     const conn = try Conn.openInMemory();
@@ -700,20 +699,17 @@ test "row group: create all" {
 
     const table_name = "test";
 
-    try schema_mod.Db.createTable(&arena, conn, table_name);
-    var schema_db = schema_mod.Db.init(conn, table_name);
-    defer schema_db.deinit();
-
     var blob_manager = try BlobManager.init(&arena, &arena, conn, table_name);
     defer blob_manager.deinit();
 
+    var schema_mgr = try SchemaManager.init(&arena, conn, table_name);
     const schema_def = try schema_mod.SchemaDef.parse(&arena, &[_][]const u8{
         "quadrant TEXT NOT NULL",
         "sector INTEGER NOT NULL",
         "size INTEGER NOT NULL",
         "SORT KEY (quadrant, sector)",
     });
-    const schema = try Schema.create(&arena, &arena, &schema_db, schema_def);
+    const schema = try schema_mgr.create(&arena, &arena, &schema_def);
 
     var table_data = try TableData.create(&arena, conn, table_name);
     defer table_data.deinit();
@@ -792,6 +788,7 @@ test "row group: create all" {
 }
 
 pub fn benchRowGroupCreate() !void {
+    const SchemaManager = @import("../schema.zig").Manager;
     const TableData = @import("../TableData.zig");
     const row_group_len: u32 = 10_000;
 
@@ -813,13 +810,10 @@ pub fn benchRowGroupCreate() !void {
 
     const table_name = "test";
 
-    try schema_mod.Db.createTable(&arena, conn, table_name);
-    var schema_db = schema_mod.Db.init(conn, table_name);
-    defer schema_db.deinit();
-
     var blob_manager = try BlobManager.init(&arena, &arena, conn, table_name);
     defer blob_manager.deinit();
 
+    var schema_mgr = try SchemaManager.init(&arena, conn, table_name);
     const schema_def = try schema_mod.SchemaDef.parse(&arena, &[_][]const u8{
         "quadrant TEXT NOT NULL",
         "sector INTEGER NOT NULL",
@@ -828,7 +822,7 @@ pub fn benchRowGroupCreate() !void {
         "name TEXT NOT NULL",
         "SORT KEY (quadrant, sector)",
     });
-    const schema = try Schema.create(&arena, &arena, &schema_db, schema_def);
+    const schema = try schema_mgr.create(&arena, &arena, &schema_def);
 
     var table_data = try TableData.create(&arena, conn, table_name);
     defer table_data.deinit();

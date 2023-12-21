@@ -16,8 +16,9 @@ const vtab = @import("sqlite3/vtab.zig");
 const Result = vtab.Result;
 
 const schema_mod = @import("schema.zig");
-const SchemaDef = schema_mod.SchemaDef;
 const Schema = schema_mod.Schema;
+const SchemaDef = schema_mod.SchemaDef;
+const SchemaManager = schema_mod.Manager;
 
 const segment = @import("segment.zig");
 
@@ -34,9 +35,6 @@ const Self = @This();
 // TODO remove this
 allocator: Allocator,
 table_static_arena: ArenaAllocator,
-db: struct {
-    schema: schema_mod.Db,
-},
 name: []const u8,
 schema: Schema,
 table_data: TableData,
@@ -49,7 +47,7 @@ dirty: bool,
 pub const InitError = error{
     NoColumns,
     UnsupportedDb,
-} || SchemaDef.ParseError || Schema.Error || SqliteErorr || mem.Allocator.Error;
+} || SchemaDef.ParseError || SchemaManager.Error || SqliteErorr || mem.Allocator.Error;
 
 pub fn create(
     self: *Self,
@@ -74,8 +72,8 @@ pub fn create(
         return InitError.UnsupportedDb;
     }
 
-    // Use the tmp arena because the schema def is not stored with the table. The
-    // data is converted into a Schema and the Schema is stored.
+    // Use the tmp arena because the schema def is not stored with the table. The data is converted
+    // into a Schema and the Schema is stored.
     const def = SchemaDef.parse(cb_ctx.arena, args[3..]) catch |e| {
         cb_ctx.setErrorMessage("error parsing schema definition: {any}", .{e});
         return e;
@@ -87,18 +85,10 @@ pub fn create(
 
     self.name = try self.table_static_arena.allocator().dupe(u8, args[2]);
 
-    try schema_mod.Db.createTable(cb_ctx.arena, conn, self.name);
-    self.db = .{
-        .schema = schema_mod.Db.init(conn, self.name),
-    };
-    errdefer self.db.schema.deinit();
+    var schema_mgr = try SchemaManager.init(cb_ctx.arena, conn, self.name);
+    defer schema_mgr.deinit();
 
-    self.schema = Schema.create(
-        &self.table_static_arena,
-        cb_ctx.arena,
-        &self.db.schema,
-        def,
-    ) catch |e| {
+    self.schema = schema_mgr.create(&self.table_static_arena, cb_ctx.arena, &def) catch |e| {
         cb_ctx.setErrorMessage("error creating schema: {any}", .{e});
         return e;
     };
@@ -208,16 +198,10 @@ pub fn connect(
 
     self.name = try self.table_static_arena.allocator().dupe(u8, args[2]);
 
-    self.db = .{
-        .schema = schema_mod.Db.init(conn, self.name),
-    };
-    errdefer self.db.schema.deinit();
+    var schema_mgr = try SchemaManager.init(cb_ctx.arena, conn, self.name);
+    defer schema_mgr.deinit();
 
-    self.schema = Schema.load(
-        &self.table_static_arena,
-        cb_ctx.arena,
-        &self.db.schema,
-    ) catch |e| {
+    self.schema = schema_mgr.load(&self.table_static_arena, cb_ctx.arena) catch |e| {
         cb_ctx.setErrorMessage("error loading schema: {any}", .{e});
         return e;
     };
@@ -277,15 +261,10 @@ pub fn disconnect(self: *Self) void {
     self.table_data.deinit();
     self.blob_manager.deinit();
 
-    self.db.schema.deinit();
-
     self.table_static_arena.deinit();
 }
 
 pub fn destroy(self: *Self, cb_ctx: *vtab.CallbackContext) void {
-    self.db.schema.dropTable(cb_ctx.arena) catch |e| {
-        std.log.err("failed to drop shadow table {s}_columns: {any}", .{ self.name, e });
-    };
     self.table_data.drop(cb_ctx.arena) catch |e| {
         std.log.err("failed to drop shadow table {s}_tabledata: {any}", .{ self.name, e });
     };
@@ -360,7 +339,7 @@ pub fn bestIndex(
 
     // Store the constraints that operate on sort key columns in sort key column order. Keep only
     // the most restrictive op for each sort key column
-    const sort_key = self.schema.sort_key.items;
+    const sort_key = self.schema.sort_key;
     var sort_key_constraints = try cb_ctx.arena.allocator()
         .alloc(?vtab.BestIndexInfo.Constraint, sort_key.len);
     for (sort_key_constraints) |*c| {

@@ -81,8 +81,8 @@ pub fn create(
     return .{
         .conn = conn,
         .vtab_table_name = vtab_table_name,
-        .sort_key = schema.sort_key.items,
-        .columns_len = schema.columns.items.len,
+        .sort_key = schema.sort_key,
+        .columns_len = schema.columns.len,
         .insert = StmtCell.init(&insertDml),
         .delete = StmtCell.init(&deleteEntryDml),
         .merge_candidates = StmtCell.init(&mergeCandidatesQuery),
@@ -104,8 +104,8 @@ const CreateTableDdlFormatter = struct {
         ,
             .{self.vtab_table_name},
         );
-        for (self.schema.sort_key.items, 0..) |sk_index, sk_rank| {
-            const col = &self.schema.columns.items[sk_index];
+        for (self.schema.sort_key, 0..) |sk_index, sk_rank| {
+            const col = &self.schema.columns[sk_index];
             const data_type = DataType.SqliteFormatter{
                 .data_type = col.column_type.data_type,
             };
@@ -114,7 +114,7 @@ const CreateTableDdlFormatter = struct {
         try writer.print("start_rowid_value INTEGER NOT NULL,", .{});
         // The `col_N` columns are uesd for storing values for insert entries and
         // segment IDs for row group entries
-        for (0..self.schema.columns.items.len) |rank| {
+        for (0..self.schema.columns.len) |rank| {
             try writer.print("col_{d}_segment_id INTEGER NULL,", .{rank});
         }
         try writer.print(
@@ -122,7 +122,7 @@ const CreateTableDdlFormatter = struct {
             \\record_count INTEGER NOT NULL,
             \\PRIMARY KEY (
         , .{});
-        for (0..self.schema.sort_key.items.len) |sk_rank| {
+        for (0..self.schema.sort_key.len) |sk_rank| {
             try writer.print("start_sk_value_{d},", .{sk_rank});
         }
         try writer.print("start_rowid_value)", .{});
@@ -136,43 +136,38 @@ const CreateTableDdlFormatter = struct {
 test "row group index: format create table ddl" {
     const allocator = testing.allocator;
 
-    var columns = try std.ArrayListUnmanaged(schema_mod.Column)
-        .initCapacity(allocator, 5);
-    defer columns.deinit(allocator);
-    columns.appendAssumeCapacity(Column{
-        .rank = 0,
-        .name = "quadrant",
-        .column_type = .{ .data_type = .Text, .nullable = false },
-        .sk_rank = 0,
-    });
-    columns.appendAssumeCapacity(Column{
-        .rank = 1,
-        .name = "sector",
-        .column_type = .{ .data_type = .Integer, .nullable = false },
-        .sk_rank = 1,
-    });
-    columns.appendAssumeCapacity(Column{
-        .rank = 2,
-        .name = "size",
-        .column_type = .{ .data_type = .Integer, .nullable = true },
-        .sk_rank = null,
-    });
-    columns.appendAssumeCapacity(Column{
-        .rank = 3,
-        .name = "gravity",
-        .column_type = .{ .data_type = .Float, .nullable = true },
-        .sk_rank = null,
-    });
+    const columns = [_]Column{
+        Column{
+            .rank = 0,
+            .name = "quadrant",
+            .column_type = .{ .data_type = .Text, .nullable = false },
+            .sk_rank = 0,
+        },
+        Column{
+            .rank = 1,
+            .name = "sector",
+            .column_type = .{ .data_type = .Integer, .nullable = false },
+            .sk_rank = 1,
+        },
+        Column{
+            .rank = 2,
+            .name = "size",
+            .column_type = .{ .data_type = .Integer, .nullable = true },
+            .sk_rank = null,
+        },
+        Column{
+            .rank = 3,
+            .name = "gravity",
+            .column_type = .{ .data_type = .Float, .nullable = true },
+            .sk_rank = null,
+        },
+    };
 
-    var sort_key = try std.ArrayListUnmanaged(usize)
-        .initCapacity(allocator, 5);
-    defer sort_key.deinit(allocator);
-    sort_key.appendAssumeCapacity(0);
-    sort_key.appendAssumeCapacity(1);
+    const sort_key = [_]usize{ 0, 1 };
 
     const schema = Schema{
-        .columns = columns,
-        .sort_key = sort_key,
+        .columns = &columns,
+        .sort_key = &sort_key,
     };
 
     const formatter = CreateTableDdlFormatter{ .vtab_table_name = "planets", .schema = &schema };
@@ -192,8 +187,8 @@ pub fn open(conn: Conn, vtab_table_name: []const u8, schema: *const Schema) Self
     return .{
         .conn = conn,
         .vtab_table_name = vtab_table_name,
-        .sort_key = schema.sort_key.items,
-        .columns_len = schema.columns.items.len,
+        .sort_key = schema.sort_key,
+        .columns_len = schema.columns.len,
         .insert = StmtCell.init(&insertDml),
         .delete = StmtCell.init(&deleteEntryDml),
         .merge_candidates = StmtCell.init(&mergeCandidatesQuery),

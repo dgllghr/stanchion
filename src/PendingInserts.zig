@@ -55,8 +55,8 @@ pub fn create(
     return .{
         .conn = conn,
         .vtab_table_name = vtab_table_name,
-        .sort_key = schema.sort_key.items,
-        .columns_len = schema.columns.items.len,
+        .sort_key = schema.sort_key,
+        .columns_len = schema.columns.len,
         .table_data = table_data,
         .next_rowid = 1,
         .insert_stmt = StmtCell.init(&insertDml),
@@ -82,7 +82,7 @@ const CreateTableDdlFormatter = struct {
         ,
             .{self.vtab_table_name},
         );
-        for (self.schema.columns.items, 0..) |*col, rank| {
+        for (self.schema.columns, 0..) |*col, rank| {
             const col_type = ColumnType.SqliteFormatter{
                 .column_type = col.column_type,
             };
@@ -91,7 +91,7 @@ const CreateTableDdlFormatter = struct {
         try writer.print(
             \\PRIMARY KEY (
         , .{});
-        for (self.schema.sort_key.items) |col_rank| {
+        for (self.schema.sort_key) |col_rank| {
             try writer.print("col_{d},", .{col_rank});
         }
         try writer.print("rowid)", .{});
@@ -102,43 +102,38 @@ const CreateTableDdlFormatter = struct {
 test "pending inserts: format create table ddl" {
     const allocator = testing.allocator;
 
-    var columns = try std.ArrayListUnmanaged(schema_mod.Column)
-        .initCapacity(allocator, 5);
-    defer columns.deinit(allocator);
-    columns.appendAssumeCapacity(Column{
-        .rank = 0,
-        .name = "quadrant",
-        .column_type = .{ .data_type = .Text, .nullable = false },
-        .sk_rank = 0,
-    });
-    columns.appendAssumeCapacity(Column{
-        .rank = 1,
-        .name = "sector",
-        .column_type = .{ .data_type = .Integer, .nullable = false },
-        .sk_rank = 1,
-    });
-    columns.appendAssumeCapacity(Column{
-        .rank = 2,
-        .name = "size",
-        .column_type = .{ .data_type = .Integer, .nullable = true },
-        .sk_rank = null,
-    });
-    columns.appendAssumeCapacity(Column{
-        .rank = 3,
-        .name = "gravity",
-        .column_type = .{ .data_type = .Float, .nullable = true },
-        .sk_rank = null,
-    });
+    const columns = [_]Column{
+        Column{
+            .rank = 0,
+            .name = "quadrant",
+            .column_type = .{ .data_type = .Text, .nullable = false },
+            .sk_rank = 0,
+        },
+        Column{
+            .rank = 1,
+            .name = "sector",
+            .column_type = .{ .data_type = .Integer, .nullable = false },
+            .sk_rank = 1,
+        },
+        Column{
+            .rank = 2,
+            .name = "size",
+            .column_type = .{ .data_type = .Integer, .nullable = true },
+            .sk_rank = null,
+        },
+        Column{
+            .rank = 3,
+            .name = "gravity",
+            .column_type = .{ .data_type = .Float, .nullable = true },
+            .sk_rank = null,
+        },
+    };
 
-    var sort_key = try std.ArrayListUnmanaged(usize)
-        .initCapacity(allocator, 5);
-    defer sort_key.deinit(allocator);
-    sort_key.appendAssumeCapacity(0);
-    sort_key.appendAssumeCapacity(1);
+    const sort_key = [_]usize{ 0, 1 };
 
     const schema = Schema{
-        .columns = columns,
-        .sort_key = sort_key,
+        .columns = &columns,
+        .sort_key = &sort_key,
     };
 
     const formatter = CreateTableDdlFormatter{ .vtab_table_name = "planets", .schema = &schema };
@@ -164,8 +159,8 @@ pub fn open(
     var self = Self{
         .conn = conn,
         .vtab_table_name = vtab_table_name,
-        .sort_key = schema.sort_key.items,
-        .columns_len = schema.columns.items.len,
+        .sort_key = schema.sort_key,
+        .columns_len = schema.columns.len,
         .table_data = table_data,
         .next_rowid = 0,
         .insert_stmt = StmtCell.init(&insertDml),
