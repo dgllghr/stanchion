@@ -2,6 +2,7 @@ const std = @import("std");
 const debug = std.debug;
 const fmt = std.fmt;
 const mem = std.mem;
+const testing = std.testing;
 
 const Self = @This();
 
@@ -129,4 +130,26 @@ pub fn read(canonical: []const u8) Self {
         .data_type = data_type,
         .nullable = nullable,
     };
+}
+
+test "schema: read column type" {
+    var col_type = read("INTEGER NOT NULL");
+    try testing.expect(!col_type.nullable);
+    try testing.expectEqual(DataType.Integer, col_type.data_type);
+
+    col_type = read("FLOAT NULL");
+    try testing.expect(col_type.nullable);
+    try testing.expectEqual(DataType.Float, col_type.data_type);
+
+    col_type = read("TEXT NOT NULL");
+    try testing.expect(!col_type.nullable);
+    try testing.expectEqual(DataType.Text, col_type.data_type);
+
+    col_type = read("BLOB NULL");
+    try testing.expect(col_type.nullable);
+    try testing.expectEqual(DataType.Blob, col_type.data_type);
+
+    col_type = read("BOOLEAN NOT NULL");
+    try testing.expect(!col_type.nullable);
+    try testing.expectEqual(DataType.Boolean, col_type.data_type);
 }

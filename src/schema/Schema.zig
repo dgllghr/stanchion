@@ -1,5 +1,6 @@
 const std = @import("std");
 const fmt = std.fmt;
+const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
@@ -40,6 +41,45 @@ pub const SqliteDdlFormatter = struct {
         );
     }
 };
+
+test "schema: format create table ddl for sqlite" {
+    const Conn = @import("../sqlite3.zig").Conn;
+    var conn = try Conn.openInMemory();
+    defer conn.close();
+
+    const columns = [_]Column{
+        Column{
+            .rank = 0,
+            .name = "first_col",
+            .column_type = .{ .data_type = .Integer, .nullable = false },
+            .sk_rank = 0,
+        },
+        Column{
+            .rank = 1,
+            .name = "second_col",
+            .column_type = .{ .data_type = .Float, .nullable = true },
+            .sk_rank = null,
+        },
+        Column{
+            .rank = 3,
+            .name = "third_col",
+            .column_type = .{ .data_type = .Text, .nullable = false },
+            .sk_rank = null,
+        },
+        Column{
+            .rank = 3,
+            .name = "fourth_col",
+            .column_type = .{ .data_type = .Boolean, .nullable = false },
+            .sk_rank = null,
+        },
+    };
+    const sort_key = [_]usize{0};
+    const schema = Self{ .columns = &columns, .sort_key = &sort_key };
+
+    const ddl = try fmt.allocPrintZ(testing.allocator, "{}", .{schema.sqliteDdlFormatter("test")});
+    defer testing.allocator.free(ddl);
+    try conn.exec(ddl);
+}
 
 const SqliteDdlColumnListFormatter = struct {
     columns: []const Column,

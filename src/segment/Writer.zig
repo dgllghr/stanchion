@@ -173,7 +173,7 @@ pub fn end(self: *Self) !void {
     }
 }
 
-test "segment writer" {
+test "segment: writer" {
     const BlobManager = @import("../BlobManager.zig");
     const MemoryValue = @import("../value.zig").MemoryValue;
 

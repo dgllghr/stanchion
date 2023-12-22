@@ -1,5 +1,6 @@
 const std = @import("std");
 const fmt = std.fmt;
+const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
@@ -179,19 +180,44 @@ fn createColumnDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
     , .{self.vtab_table_name});
 }
 
-test "create column" {
+test "schema: create and read columns" {
     const conn = try Conn.openInMemory();
 
     var arena = ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var column = Column{
-        .rank = 0,
-        .name = "first_col",
-        .column_type = .{ .data_type = .Integer, .nullable = false },
-        .sk_rank = 0,
+    const columns = [_]Column{
+        Column{
+            .rank = 0,
+            .name = "first_col",
+            .column_type = .{ .data_type = .Integer, .nullable = false },
+            .sk_rank = 0,
+        },
+        Column{
+            .rank = 1,
+            .name = "second_col",
+            .column_type = .{ .data_type = .Float, .nullable = true },
+            .sk_rank = null,
+        },
+        Column{
+            .rank = 3,
+            .name = "third_col",
+            .column_type = .{ .data_type = .Text, .nullable = false },
+            .sk_rank = null,
+        },
     };
 
     var mgr = try Self.init(&arena, conn, "test");
-    try mgr.createColumn(&arena, &column);
+    inline for (&columns) |*col| {
+        try mgr.createColumn(&arena, col);
+    }
+
+    const schema = try mgr.load(&arena, &arena);
+    for (&columns, schema.columns) |*exp_col, *col| {
+        try testing.expectEqual(exp_col.rank, col.rank);
+        try testing.expectEqualSlices(u8, exp_col.name, col.name);
+        try testing.expectEqual(exp_col.column_type.nullable, col.column_type.nullable);
+        try testing.expectEqual(exp_col.column_type.data_type, col.column_type.data_type);
+        try testing.expectEqual(exp_col.sk_rank, col.sk_rank);
+    }
 }

@@ -196,7 +196,7 @@ pub fn readInto(
     }
 }
 
-test "segment reader" {
+test "segment: reader" {
     const BlobManager = @import("../BlobManager.zig");
     const MemoryValue = @import("../value.zig").MemoryValue;
     const Plan = @import("Planner.zig").Plan;

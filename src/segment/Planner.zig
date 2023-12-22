@@ -90,7 +90,6 @@ pub fn end(self: *Self) !Plan {
 
     var present_encoder: ?stripe.Bool.Encoder = null;
     const present = try self.present.end();
-    // TODO errdefer
 
     // Optimization: skip the present stripe if all values present (no nulls) and skip the
     // primary stripe if no values present (all nulls)
@@ -112,7 +111,6 @@ pub fn end(self: *Self) !Plan {
     var length_encoder: ?stripe.Int.Encoder = null;
     if (self.length) |*length_validator| {
         const length = try length_validator.end();
-        // TODO errdefer
         header.length_stripe = length.meta;
         length_encoder = length.encoder;
     }
@@ -137,7 +135,8 @@ pub fn end(self: *Self) !Plan {
     };
 }
 
-test "segment: plan" {
+test "segment: planner" {
+    const testing = @import("std").testing;
     const MemoryValue = @import("../value.zig").MemoryValue;
 
     var planner = init(.{
@@ -151,5 +150,8 @@ test "segment: plan" {
         });
     }
 
-    _ = try planner.end();
+    const plan = try planner.end();
+    try testing.expect(plan.present == null);
+    try testing.expect(plan.length == null);
+    try testing.expect(plan.primary != null);
 }

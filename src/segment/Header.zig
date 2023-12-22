@@ -1,5 +1,6 @@
 const std = @import("std");
 const mem = std.mem;
+const testing = std.testing;
 
 const stripe = @import("../stripe.zig");
 const Encoding = stripe.Encoding;
@@ -70,4 +71,33 @@ pub fn totalStripesLen(self: Self) u32 {
 
 pub fn totalSegmentLen(self: Self) u32 {
     return self.totalStripesLen() + encoded_len;
+}
+
+test "segment: round trip header encode and decode" {
+    const MemoryBlob = @import("../MemoryBlob.zig");
+
+    const header = Self{
+        .present_stripe = .{
+            .byte_len = 124_235_123,
+            .encoding = .Direct,
+        },
+        .length_stripe = .{
+            .byte_len = 0,
+            .encoding = @enumFromInt(0),
+        },
+        .primary_stripe = .{
+            .byte_len = 1,
+            .encoding = .Constant,
+        },
+    };
+    const data = try testing.allocator.alloc(u8, encoded_len);
+    defer testing.allocator.free(data);
+    var blob = MemoryBlob{
+        .data = data,
+    };
+
+    try header.write(&blob);
+    const header_out = try Self.read(&blob);
+
+    try testing.expectEqual(header, header_out);
 }
