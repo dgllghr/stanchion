@@ -90,7 +90,7 @@ test "segment: round trip header encode and decode" {
             .encoding = .Constant,
         },
     };
-    const data = try testing.allocator.alloc(u8, encoded_len);
+    const data = try testing.allocator.alloc(u8, 100);
     defer testing.allocator.free(data);
     var blob = MemoryBlob{
         .data = data,

@@ -579,7 +579,9 @@ fn Limiter(comptime Cur: type) type {
 }
 
 test "row group: create single from pending inserts" {
+    const datasets = @import("../testing/datasets.zig");
     const SchemaManager = @import("../schema.zig").Manager;
+    _ = SchemaManager;
     const TableData = @import("../TableData.zig");
 
     const conn = try Conn.openInMemory();
@@ -589,25 +591,14 @@ test "row group: create single from pending inserts" {
     defer arena.deinit();
 
     const table_name = "test";
+    const schema = datasets.planets.schema;
 
     var blob_manager = try BlobManager.init(&arena, &arena, conn, table_name);
     defer blob_manager.deinit();
-
-    var schema_mgr = try SchemaManager.init(&arena, conn, table_name);
-    const schema_def = try schema_mod.SchemaDef.parse(&arena, &[_][]const u8{
-        "quadrant TEXT NOT NULL",
-        "sector INTEGER NOT NULL",
-        "size INTEGER NOT NULL",
-        "SORT KEY (quadrant, sector)",
-    });
-    const schema = try schema_mgr.create(&arena, &arena, &schema_def);
-
     var table_data = try TableData.create(&arena, conn, table_name);
     defer table_data.deinit();
-
     var row_group_index = try Index.create(&arena, conn, table_name, &schema);
     defer row_group_index.deinit();
-
     var pending_inserts = try PendingInserts.create(
         &arena,
         conn,
@@ -617,23 +608,10 @@ test "row group: create single from pending inserts" {
     );
     errdefer pending_inserts.deinit();
 
-    var table_values = [_][3]MemoryValue{
-        .{
-            .{ .Text = "Alpha" }, .{ .Integer = 7 }, .{ .Integer = 100 },
-        },
-        .{
-            .{ .Text = "Alpha" }, .{ .Integer = 9 }, .{ .Integer = 50 },
-        },
-        .{
-            .{ .Text = "Gamma" }, .{ .Integer = 3 }, .{ .Integer = 75 },
-        },
-        .{
-            .{ .Text = "Beta" }, .{ .Integer = 17 }, .{ .Integer = 105 },
-        },
-    };
+    const table_values = datasets.planets.fixed_data[0..4];
     const rowids = [_]i64{ 1, 2, 4, 3 };
 
-    for (&table_values) |*row| {
+    for (table_values) |*row| {
         _ = try pending_inserts.insert(&arena, MemoryTuple{ .values = row });
     }
 
@@ -688,7 +666,7 @@ test "row group: create single from pending inserts" {
 }
 
 test "row group: create all" {
-    const SchemaManager = @import("../schema.zig").Manager;
+    const datasets = @import("../testing/datasets.zig");
     const TableData = @import("../TableData.zig");
 
     const conn = try Conn.openInMemory();
@@ -698,25 +676,14 @@ test "row group: create all" {
     defer arena.deinit();
 
     const table_name = "test";
+    const schema = datasets.planets.schema;
 
     var blob_manager = try BlobManager.init(&arena, &arena, conn, table_name);
     defer blob_manager.deinit();
-
-    var schema_mgr = try SchemaManager.init(&arena, conn, table_name);
-    const schema_def = try schema_mod.SchemaDef.parse(&arena, &[_][]const u8{
-        "quadrant TEXT NOT NULL",
-        "sector INTEGER NOT NULL",
-        "size INTEGER NOT NULL",
-        "SORT KEY (quadrant, sector)",
-    });
-    const schema = try schema_mgr.create(&arena, &arena, &schema_def);
-
     var table_data = try TableData.create(&arena, conn, table_name);
     defer table_data.deinit();
-
     var row_group_index = try Index.create(&arena, conn, table_name, &schema);
     defer row_group_index.deinit();
-
     var pending_inserts = try PendingInserts.create(
         &arena,
         conn,
@@ -726,23 +693,10 @@ test "row group: create all" {
     );
     errdefer pending_inserts.deinit();
 
-    var table_values = [_][3]MemoryValue{
-        .{
-            .{ .Text = "Alpha" }, .{ .Integer = 7 }, .{ .Integer = 100 },
-        },
-        .{
-            .{ .Text = "Alpha" }, .{ .Integer = 9 }, .{ .Integer = 50 },
-        },
-        .{
-            .{ .Text = "Gamma" }, .{ .Integer = 3 }, .{ .Integer = 75 },
-        },
-        .{
-            .{ .Text = "Beta" }, .{ .Integer = 17 }, .{ .Integer = 105 },
-        },
-    };
+    const table_values = datasets.planets.fixed_data[0..4];
     const rowids = [_]i64{ 1, 2, 4, 3 };
 
-    for (&table_values) |*row| {
+    for (table_values) |*row| {
         _ = try pending_inserts.insert(&arena, MemoryTuple{ .values = row });
     }
 
@@ -788,48 +742,28 @@ test "row group: create all" {
 }
 
 pub fn benchRowGroupCreate() !void {
-    const SchemaManager = @import("../schema.zig").Manager;
+    const datasets = @import("../testing/datasets.zig");
     const TableData = @import("../TableData.zig");
+    const TmpDiskDb = @import("../testing/TmpDiskDb.zig");
+
     const row_group_len: u32 = 10_000;
 
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    try tmp_dir.dir.makeDir(&tmp_dir.sub_path);
-    var path_buf: [200]u8 = undefined;
-    const tmp_path = try tmp_dir.parent_dir.realpath(&tmp_dir.sub_path, &path_buf);
-    const db_path = try std.fs.path.joinZ(std.heap.page_allocator, &[_][]const u8{
-        tmp_path,
-        "bench.db",
-    });
-
-    const conn = try Conn.open(db_path);
-    defer conn.close();
+    var tmp_disk_db = try TmpDiskDb.create(std.heap.page_allocator, "bench.db");
+    defer tmp_disk_db.deinit(std.heap.page_allocator);
+    const conn = tmp_disk_db.conn;
 
     var arena = ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
     const table_name = "test";
+    const schema = datasets.planets.schema;
 
     var blob_manager = try BlobManager.init(&arena, &arena, conn, table_name);
     defer blob_manager.deinit();
-
-    var schema_mgr = try SchemaManager.init(&arena, conn, table_name);
-    const schema_def = try schema_mod.SchemaDef.parse(&arena, &[_][]const u8{
-        "quadrant TEXT NOT NULL",
-        "sector INTEGER NOT NULL",
-        "size INTEGER NULL",
-        "gravity FLOAT NULL",
-        "name TEXT NOT NULL",
-        "SORT KEY (quadrant, sector)",
-    });
-    const schema = try schema_mgr.create(&arena, &arena, &schema_def);
-
     var table_data = try TableData.create(&arena, conn, table_name);
     defer table_data.deinit();
-
     var row_group_index = try Index.create(&arena, conn, table_name, &schema);
     defer row_group_index.deinit();
-
     var pending_inserts = try PendingInserts.create(
         &arena,
         conn,
@@ -847,7 +781,7 @@ pub fn benchRowGroupCreate() !void {
     try conn.exec("BEGIN");
     const start_insert = std.time.microTimestamp();
     for (0..row_group_len) |_| {
-        var row = randomRow(&prng);
+        var row = datasets.planets.randomRecord(&prng);
         _ = try pending_inserts.insert(&arena, MemoryTuple{ .values = &row });
     }
     try conn.exec("COMMIT");
@@ -884,7 +818,7 @@ pub fn benchRowGroupCreate() !void {
 
     try conn.exec("BEGIN");
     for (0..(row_group_len * 3)) |_| {
-        var row = randomRow(&prng);
+        var row = datasets.planets.randomRecord(&prng);
         _ = try pending_inserts.insert(&arena, MemoryTuple{ .values = &row });
     }
     try conn.exec("COMMIT");
@@ -911,18 +845,4 @@ pub fn benchRowGroupCreate() !void {
         const end = std.time.microTimestamp();
         std.log.err("create row group: {d} micros", .{end - start});
     }
-}
-
-const quadrants = [_][]const u8{ "Alpha", "Beta", "Gamma", "Delta" };
-
-fn randomRow(prng: *std.rand.DefaultPrng) [5]MemoryValue {
-    const quadrant = quadrants[prng.random().intRangeLessThan(usize, 0, quadrants.len)];
-
-    return [5]MemoryValue{
-        .{ .Text = quadrant },
-        .{ .Integer = prng.random().int(i64) },
-        .{ .Integer = 100 },
-        .{ .Float = 3.75 },
-        .{ .Text = "Veridian 3" },
-    };
 }

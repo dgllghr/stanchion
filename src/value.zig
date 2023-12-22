@@ -122,7 +122,7 @@ pub const MemoryValue = union(enum) {
 pub const MemoryTuple = struct {
     const Self = @This();
 
-    values: []MemoryValue,
+    values: []const MemoryValue,
 
     pub const Value = MemoryValue;
 

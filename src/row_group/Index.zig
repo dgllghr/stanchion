@@ -134,53 +134,25 @@ const CreateTableDdlFormatter = struct {
 };
 
 test "row group index: format create table ddl" {
+    const datasets = @import("../testing/datasets.zig");
     const allocator = testing.allocator;
-
-    const columns = [_]Column{
-        Column{
-            .rank = 0,
-            .name = "quadrant",
-            .column_type = .{ .data_type = .Text, .nullable = false },
-            .sk_rank = 0,
-        },
-        Column{
-            .rank = 1,
-            .name = "sector",
-            .column_type = .{ .data_type = .Integer, .nullable = false },
-            .sk_rank = 1,
-        },
-        Column{
-            .rank = 2,
-            .name = "size",
-            .column_type = .{ .data_type = .Integer, .nullable = true },
-            .sk_rank = null,
-        },
-        Column{
-            .rank = 3,
-            .name = "gravity",
-            .column_type = .{ .data_type = .Float, .nullable = true },
-            .sk_rank = null,
-        },
-    };
-
-    const sort_key = [_]usize{ 0, 1 };
-
-    const schema = Schema{
-        .columns = &columns,
-        .sort_key = &sort_key,
-    };
-
-    const formatter = CreateTableDdlFormatter{ .vtab_table_name = "planets", .schema = &schema };
-    const ddl = try fmt.allocPrintZ(allocator, "{}", .{formatter});
-    defer allocator.free(ddl);
 
     const conn = try Conn.openInMemory();
     defer conn.close();
 
-    conn.exec(ddl) catch |e| {
-        std.log.err("sqlite error: {s}", .{conn.lastErrMsg()});
-        return e;
-    };
+    inline for (.{ datasets.planets, datasets.all_column_types }) |s| {
+        const formatter = CreateTableDdlFormatter{
+            .vtab_table_name = s.name,
+            .schema = &s.schema,
+        };
+        const ddl = try fmt.allocPrintZ(allocator, "{}", .{formatter});
+        defer allocator.free(ddl);
+
+        conn.exec(ddl) catch |e| {
+            std.log.err("sqlite error: {s}", .{conn.lastErrMsg()});
+            return e;
+        };
+    }
 }
 
 pub fn open(conn: Conn, vtab_table_name: []const u8, schema: *const Schema) Self {

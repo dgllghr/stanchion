@@ -17,7 +17,8 @@ pub fn readAt(self: Self, buf: []u8, start: usize) !void {
 }
 
 pub fn writeAt(self: Self, buf: []const u8, start: usize) !void {
-    @memcpy(self.data[start..], buf);
+    const end = start + buf.len;
+    @memcpy(self.data[start..end], buf);
 }
 
 pub fn sliceFrom(self: Self, from: u32) BlobSlice(Self) {

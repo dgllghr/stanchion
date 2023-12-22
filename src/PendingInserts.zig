@@ -101,40 +101,9 @@ const CreateTableDdlFormatter = struct {
 
 test "pending inserts: format create table ddl" {
     const allocator = testing.allocator;
+    const datasets = @import("testing/datasets.zig");
 
-    const columns = [_]Column{
-        Column{
-            .rank = 0,
-            .name = "quadrant",
-            .column_type = .{ .data_type = .Text, .nullable = false },
-            .sk_rank = 0,
-        },
-        Column{
-            .rank = 1,
-            .name = "sector",
-            .column_type = .{ .data_type = .Integer, .nullable = false },
-            .sk_rank = 1,
-        },
-        Column{
-            .rank = 2,
-            .name = "size",
-            .column_type = .{ .data_type = .Integer, .nullable = true },
-            .sk_rank = null,
-        },
-        Column{
-            .rank = 3,
-            .name = "gravity",
-            .column_type = .{ .data_type = .Float, .nullable = true },
-            .sk_rank = null,
-        },
-    };
-
-    const sort_key = [_]usize{ 0, 1 };
-
-    const schema = Schema{
-        .columns = &columns,
-        .sort_key = &sort_key,
-    };
+    const schema = datasets.planets.schema;
 
     const formatter = CreateTableDdlFormatter{ .vtab_table_name = "planets", .schema = &schema };
     const ddl = try fmt.allocPrintZ(allocator, "{}", .{formatter});
