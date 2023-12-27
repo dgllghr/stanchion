@@ -1,6 +1,7 @@
 const std = @import("std");
 const fmt = std.fmt;
 const testing = std.testing;
+const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
 const sqlite = @import("sqlite3.zig");
@@ -8,7 +9,8 @@ const Conn = sqlite.Conn;
 const Stmt = sqlite.Stmt;
 const ValueRef = sqlite.ValueRef;
 
-const stmt_cell = @import("stmt_cell.zig");
+const prep_stmt = @import("prepared_stmt.zig");
+const sql_fmt = @import("sql_fmt.zig");
 
 const schema_mod = @import("schema.zig");
 const Column = schema_mod.Column;
@@ -19,8 +21,6 @@ const Schema = schema_mod.Schema;
 const TableData = @import("TableData.zig");
 const CursorRange = @import("CursorRange.zig");
 
-const sql_fmt = @import("sql_fmt.zig");
-
 conn: Conn,
 vtab_table_name: []const u8,
 sort_key: []const usize,
@@ -30,15 +30,18 @@ table_data: *TableData,
 next_rowid: i64,
 
 insert_stmt: StmtCell,
-cursor_from_key: StmtCell,
+cursor_from_start: StmtPool,
+cursor_from_key: StmtPool,
 delete_from: StmtCell,
 delete_range: StmtCell,
 
 const Self = @This();
 
-const StmtCell = stmt_cell.StmtCell(Self);
+const StmtCell = prep_stmt.Cell(Self);
+const StmtPool = prep_stmt.Pool(Self);
 
 pub fn create(
+    allocator: Allocator,
     tmp_arena: *ArenaAllocator,
     conn: Conn,
     vtab_table_name: []const u8,
@@ -60,7 +63,8 @@ pub fn create(
         .table_data = table_data,
         .next_rowid = 1,
         .insert_stmt = StmtCell.init(&insertDml),
-        .cursor_from_key = StmtCell.init(&cursorFromKeyQuery),
+        .cursor_from_start = StmtPool.init(allocator, &cursorFromStartQuery),
+        .cursor_from_key = StmtPool.init(allocator, &cursorFromKeyQuery),
         .delete_from = StmtCell.init(&deleteFromQuery),
         .delete_range = StmtCell.init(&deleteRangeQuery),
     };
@@ -119,6 +123,7 @@ test "pending inserts: format create table ddl" {
 }
 
 pub fn open(
+    allocator: Allocator,
     tmp_arena: *ArenaAllocator,
     conn: Conn,
     vtab_table_name: []const u8,
@@ -133,7 +138,8 @@ pub fn open(
         .table_data = table_data,
         .next_rowid = 0,
         .insert_stmt = StmtCell.init(&insertDml),
-        .cursor_from_key = StmtCell.init(&cursorFromKeyQuery),
+        .cursor_from_start = StmtPool.init(allocator, &cursorFromStartQuery),
+        .cursor_from_key = StmtPool.init(allocator, &cursorFromKeyQuery),
         .delete_from = StmtCell.init(&deleteFromQuery),
         .delete_range = StmtCell.init(&deleteRangeQuery),
     };
@@ -143,6 +149,7 @@ pub fn open(
 
 pub fn deinit(self: *Self) void {
     self.insert_stmt.deinit();
+    self.cursor_from_start.deinit();
     self.cursor_from_key.deinit();
     self.delete_from.deinit();
     self.delete_range.deinit();
@@ -162,8 +169,8 @@ pub fn insert(self: *Self, tmp_arena: *ArenaAllocator, values: anytype) !i64 {
     const rowid = self.next_rowid;
     self.next_rowid += 1;
 
-    const stmt = try self.insert_stmt.getStmt(tmp_arena, self);
-    defer self.insert_stmt.reset();
+    const stmt = try self.insert_stmt.acquire(tmp_arena, self);
+    defer self.insert_stmt.release();
 
     try stmt.bind(.Int64, 1, rowid);
     for (0..self.columns_len) |idx| {
@@ -204,6 +211,7 @@ test "pending inserts: insert dml" {
         .table_data = undefined,
         .next_rowid = undefined,
         .insert_stmt = undefined,
+        .cursor_from_start = undefined,
         .cursor_from_key = undefined,
         .delete_from = undefined,
         .delete_range = undefined,
@@ -227,12 +235,12 @@ pub fn loadNextRowid(self: *Self, tmp_arena: *ArenaAllocator) !void {
 
 pub const Cursor = struct {
     stmt: Stmt,
-    cell: ?*StmtCell,
+    pool: ?*StmtPool,
     is_eof: bool,
 
     pub fn deinit(self: *Cursor) void {
-        if (self.cell) |*cell| {
-            cell.*.reset();
+        if (self.pool) |*pool| {
+            pool.*.release(self.stmt);
         } else {
             self.stmt.deinit();
         }
@@ -275,14 +283,13 @@ pub const Cursor = struct {
 };
 
 pub fn cursor(self: *Self, tmp_arena: *ArenaAllocator) !Cursor {
-    const query = try self.cursorFromStartQuery(tmp_arena);
-    const stmt = try self.conn.prepare(query);
+    const stmt = try self.cursor_from_start.acquire(tmp_arena, self);
 
     const eof = !(try stmt.next());
 
     return .{
         .stmt = stmt,
-        .cell = null,
+        .pool = &self.cursor_from_start,
         .is_eof = eof,
     };
 }
@@ -307,7 +314,7 @@ pub fn cursorFrom(
     start_sort_key: anytype,
     start_rowid: i64,
 ) !Cursor {
-    const stmt = try self.cursor_from_key.getStmt(tmp_arena, self);
+    const stmt = try self.cursor_from_key.acquire(tmp_arena, self);
 
     for (0..self.sort_key.len) |idx| {
         const value = try start_sort_key.readValue(idx);
@@ -319,7 +326,7 @@ pub fn cursorFrom(
 
     return .{
         .stmt = stmt,
-        .cell = &self.cursor_from_key,
+        .pool = &self.cursor_from_key,
         .is_eof = eof,
     };
 }
@@ -352,7 +359,7 @@ pub fn cursorPartial(self: *Self, tmp_arena: *ArenaAllocator, range: CursorRange
 
     return .{
         .stmt = stmt,
-        .cell = null,
+        .pool = null,
         .is_eof = eof,
     };
 }
@@ -390,8 +397,8 @@ pub fn deleteFrom(
     start_sort_key: anytype,
     start_rowid: i64,
 ) !void {
-    const stmt = try self.delete_from.getStmt(tmp_arena, self);
-    defer self.delete_from.reset();
+    const stmt = try self.delete_from.acquire(tmp_arena, self);
+    defer self.delete_from.release();
 
     for (0..self.sort_key.len) |idx| {
         const value = try start_sort_key.readValue(idx);
@@ -421,8 +428,8 @@ pub fn deleteRange(
     end_sort_key: anytype,
     end_rowid: i64,
 ) !void {
-    const stmt = try self.delete_range.getStmt(tmp_arena, self);
-    defer self.delete_range.reset();
+    const stmt = try self.delete_range.acquire(tmp_arena, self);
+    defer self.delete_range.release();
 
     for (0..self.sort_key.len) |idx| {
         const value = try start_sort_key.readValue(idx);

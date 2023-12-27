@@ -122,6 +122,7 @@ pub fn create(
     errdefer self.row_group_index.deinit();
 
     self.pending_inserts = PendingInserts.create(
+        allocator,
         cb_ctx.arena,
         conn,
         self.name,
@@ -227,6 +228,7 @@ pub fn connect(
     errdefer self.row_group_index.deinit();
 
     self.pending_inserts = PendingInserts.open(
+        allocator,
         cb_ctx.arena,
         conn,
         self.name,

@@ -6,8 +6,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const sqlite = @import("sqlite3.zig");
 const Conn = sqlite.Conn;
 
-const stmt_cell = @import("stmt_cell.zig");
-
+const prep_stmt = @import("prepared_stmt.zig");
 const sql_fmt = @import("sql_fmt.zig");
 
 conn: Conn,
@@ -18,7 +17,7 @@ write_data: StmtCell,
 
 const Self = @This();
 
-const StmtCell = stmt_cell.StmtCell(Self);
+const StmtCell = prep_stmt.Cell(Self);
 
 pub const Key = enum(u8) {
     next_rowid = 1,
@@ -67,8 +66,8 @@ pub fn drop(self: *Self, tmp_arena: *ArenaAllocator) !void {
 }
 
 pub fn readInt(self: *Self, tmp_arena: *ArenaAllocator, key: Key) !?i64 {
-    const stmt = try self.read_data.getStmt(tmp_arena, self);
-    defer self.read_data.reset();
+    const stmt = try self.read_data.acquire(tmp_arena, self);
+    defer self.read_data.release();
 
     try stmt.bind(.Int64, 1, @intFromEnum(key));
 
@@ -89,8 +88,8 @@ fn readQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
 }
 
 pub fn writeInt(self: *Self, tmp_arena: *ArenaAllocator, key: Key, value: i64) !void {
-    const stmt = try self.write_data.getStmt(tmp_arena, self);
-    defer self.write_data.reset();
+    const stmt = try self.write_data.acquire(tmp_arena, self);
+    defer self.write_data.release();
 
     try stmt.bind(.Int64, 1, @intFromEnum(key));
     try stmt.bind(.Int64, 2, value);

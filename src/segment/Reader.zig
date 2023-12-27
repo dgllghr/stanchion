@@ -21,8 +21,6 @@ const Blob = sqlite.Blob;
 const BlobSlice = sqlite.Blob.BlobSlice;
 const Conn = sqlite.Conn;
 
-const stmt_cell = @import("../stmt_cell.zig");
-
 const schema_mod = @import("../schema.zig");
 const DataType = schema_mod.ColumnType.DataType;
 

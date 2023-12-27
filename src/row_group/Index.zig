@@ -12,7 +12,7 @@ const Conn = sqlite.Conn;
 const Stmt = sqlite.Stmt;
 const ValueRef = sqlite.ValueRef;
 
-const stmt_cell = @import("../stmt_cell.zig");
+const prep_stmt = @import("../prepared_stmt.zig");
 const sql_fmt = @import("../sql_fmt.zig");
 
 const schema_mod = @import("../schema.zig");
@@ -53,7 +53,7 @@ merge_candidates: StmtCell,
 
 const Self = @This();
 
-const StmtCell = stmt_cell.StmtCell(Self);
+const StmtCell = prep_stmt.Cell(Self);
 
 pub const Entry = struct {
     rowid_segment_id: i64,
@@ -190,8 +190,8 @@ pub fn insertEntry(
     start_rowid: i64,
     entry: *const Entry,
 ) !void {
-    const stmt = try self.insert.getStmt(tmp_arena, self);
-    defer self.insert.reset();
+    const stmt = try self.insert.acquire(tmp_arena, self);
+    defer self.insert.release();
 
     try stmt.bind(.Int64, 1, @intCast(entry.record_count));
     try stmt.bind(.Int64, 2, start_rowid);
@@ -259,8 +259,8 @@ pub fn deleteEntry(
     start_sort_key: anytype,
     start_rowid: i64,
 ) !void {
-    const stmt = try self.delete.getStmt(tmp_arena, self);
-    defer self.delete.reset();
+    const stmt = try self.delete.acquire(tmp_arena, self);
+    defer self.delete.release();
 
     for (0..self.sort_key.len) |idx| {
         const sk_value = try start_sort_key.readValue(idx);
@@ -456,7 +456,7 @@ pub const MergeCandidateCursor = struct {
     };
 
     pub fn deinit(self: *MergeCandidateCursor) void {
-        self.cell.reset();
+        self.cell.release();
     }
 
     pub fn eof(self: *const MergeCandidateCursor) bool {
@@ -517,7 +517,7 @@ pub const MergeCandidateCursor = struct {
 /// At most 1 `MergeCandidateCursor` can be active at a time. Be sure deinit is called on a
 /// `MergeCandidateCursor` before calling this function again.
 pub fn mergeCandidates(self: *Self, tmp_arena: *ArenaAllocator) !MergeCandidateCursor {
-    const stmt = try self.merge_candidates.getStmt(tmp_arena, self);
+    const stmt = try self.merge_candidates.acquire(tmp_arena, self);
     const eof = !(try stmt.next());
     return .{
         .stmt = stmt,

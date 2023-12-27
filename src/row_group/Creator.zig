@@ -600,6 +600,7 @@ test "row group: create single from pending inserts" {
     var row_group_index = try Index.create(&arena, conn, table_name, &schema);
     defer row_group_index.deinit();
     var pending_inserts = try PendingInserts.create(
+        arena.allocator(),
         &arena,
         conn,
         table_name,
@@ -685,6 +686,7 @@ test "row group: create all" {
     var row_group_index = try Index.create(&arena, conn, table_name, &schema);
     defer row_group_index.deinit();
     var pending_inserts = try PendingInserts.create(
+        arena.allocator(),
         &arena,
         conn,
         table_name,
@@ -765,6 +767,7 @@ pub fn benchRowGroupCreate() !void {
     var row_group_index = try Index.create(&arena, conn, table_name, &schema);
     defer row_group_index.deinit();
     var pending_inserts = try PendingInserts.create(
+        arena.allocator(),
         &arena,
         conn,
         table_name,

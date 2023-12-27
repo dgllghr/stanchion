@@ -12,7 +12,6 @@ const Conn = sqlite.Conn;
 const Stmt = sqlite.Stmt;
 const ValueRef = sqlite.ValueRef;
 
-const stmt_cell = @import("../stmt_cell.zig");
 const sql_fmt = @import("../sql_fmt.zig");
 
 const schema_mod = @import("../schema.zig");

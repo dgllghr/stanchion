@@ -7,7 +7,7 @@ const sqlite = @import("sqlite3.zig");
 const Blob = sqlite.Blob;
 const Conn = sqlite.Conn;
 
-const stmt_cell = @import("stmt_cell.zig");
+const prep_stmt = @import("prepared_stmt.zig");
 
 conn: Conn,
 table_name: [:0]const u8,
@@ -16,7 +16,7 @@ delete_stmt: StmtCell,
 
 const Self = @This();
 
-const StmtCell = stmt_cell.StmtCell(Self);
+const StmtCell = prep_stmt.Cell(Self);
 
 const blob_column_name = "blob";
 
@@ -102,8 +102,8 @@ pub const Handle = struct {
 };
 
 pub fn create(self: *Self, tmp_arena: *ArenaAllocator, size: u32) !Handle {
-    const stmt = try self.insert_stmt.getStmt(tmp_arena, self);
-    defer self.insert_stmt.reset();
+    const stmt = try self.insert_stmt.acquire(tmp_arena, self);
+    defer self.insert_stmt.release();
 
     try stmt.bind(.Int64, 1, @as(i64, @intCast(size)));
     _ = try stmt.next();
@@ -138,8 +138,8 @@ pub fn open(self: *Self, id: i64) !Handle {
 }
 
 fn delete(self: *Self, tmp_arena: *ArenaAllocator, id: i64) !void {
-    const stmt = try self.delete_stmt.getStmt(tmp_arena, self);
-    defer self.delete_stmt.reset();
+    const stmt = try self.delete_stmt.acquire(tmp_arena, self);
+    defer self.delete_stmt.release();
 
     try stmt.bind(.Int64, 1, @as(i64, @intCast(id)));
     try stmt.exec();

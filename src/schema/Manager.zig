@@ -9,7 +9,7 @@ const sqlite = @import("../sqlite3.zig");
 const Conn = sqlite.Conn;
 const Stmt = sqlite.Stmt;
 
-const stmt_cell = @import("../stmt_cell.zig");
+const prep_stmt = @import("../prepared_stmt.zig");
 
 const Column = @import("Column.zig");
 const ColumnType = @import("ColumnType.zig");
@@ -23,7 +23,7 @@ create_column: StmtCell,
 
 const Self = @This();
 
-const StmtCell = stmt_cell.StmtCell(Self);
+const StmtCell = prep_stmt.Cell(Self);
 
 pub const Error = error{ SortKeyColumnNotFound, ExecReturnedData };
 
@@ -65,8 +65,8 @@ pub fn destroy(self: *Self, tmp_arena: *ArenaAllocator) !void {
 }
 
 pub fn load(self: *Self, table_static_arena: *ArenaAllocator, tmp_arena: *ArenaAllocator) !Schema {
-    const stmt = try self.load_columns.getStmt(tmp_arena, self);
-    defer self.load_columns.reset();
+    const stmt = try self.load_columns.acquire(tmp_arena, self);
+    defer self.load_columns.release();
 
     var columns = ArrayListUnmanaged(Column){};
     var sort_key_len: usize = 0;
@@ -160,8 +160,8 @@ pub fn create(
 }
 
 pub fn createColumn(self: *Self, tmp_arena: *ArenaAllocator, column: *const Column) !void {
-    const stmt = try self.create_column.getStmt(tmp_arena, self);
-    defer self.create_column.reset();
+    const stmt = try self.create_column.acquire(tmp_arena, self);
+    defer self.create_column.release();
 
     try stmt.bind(.Int32, 1, column.rank);
     try stmt.bind(.Text, 2, column.name);
