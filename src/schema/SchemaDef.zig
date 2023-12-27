@@ -138,6 +138,8 @@ test "parse data type" {
         .{ ColumnType.DataType.Float, "FLOAT" },
         .{ ColumnType.DataType.Text, "text" },
         .{ ColumnType.DataType.Blob, "BLOB" },
+        .{ ColumnType.DataType.Text, "VarChar" },
+        .{ ColumnType.DataType.Float, "  double" },
     };
 
     for (inputs) |input| {
@@ -203,11 +205,18 @@ fn consumeMatchFloatType(r: *Reader) !void {
         try consumeMatchAny(r, &[_]u8{ 'O', 'o' });
         try consumeMatchAny(r, &[_]u8{ 'A', 'a' });
         try consumeMatchAny(r, &[_]u8{ 'T', 't' });
-    } else {
-        try consumeMatchAny(r, &[_]u8{ 'R', 'r' });
+    } else if (r.current() == 'R' or r.current() == 'r') {
+        r.advance();
         try consumeMatchAny(r, &[_]u8{ 'E', 'e' });
         try consumeMatchAny(r, &[_]u8{ 'A', 'a' });
         try consumeMatchAny(r, &[_]u8{ 'L', 'l' });
+    } else {
+        try consumeMatchAny(r, &[_]u8{ 'D', 'd' });
+        try consumeMatchAny(r, &[_]u8{ 'O', 'o' });
+        try consumeMatchAny(r, &[_]u8{ 'U', 'u' });
+        try consumeMatchAny(r, &[_]u8{ 'B', 'b' });
+        try consumeMatchAny(r, &[_]u8{ 'L', 'l' });
+        try consumeMatchAny(r, &[_]u8{ 'E', 'e' });
     }
 }
 
@@ -225,10 +234,20 @@ fn consumeMatchTextType(r: *Reader) !void {
     const start = r.position;
     errdefer r.position = start;
 
-    try consumeMatchAny(r, &[_]u8{ 'T', 't' });
-    try consumeMatchAny(r, &[_]u8{ 'E', 'e' });
-    try consumeMatchAny(r, &[_]u8{ 'X', 'x' });
-    try consumeMatchAny(r, &[_]u8{ 'T', 't' });
+    if (r.current() == 'T' or r.current() == 't') {
+        r.advance();
+        try consumeMatchAny(r, &[_]u8{ 'E', 'e' });
+        try consumeMatchAny(r, &[_]u8{ 'X', 'x' });
+        try consumeMatchAny(r, &[_]u8{ 'T', 't' });
+    } else {
+        try consumeMatchAny(r, &[_]u8{ 'V', 'v' });
+        try consumeMatchAny(r, &[_]u8{ 'A', 'a' });
+        try consumeMatchAny(r, &[_]u8{ 'R', 'r' });
+        try consumeMatchAny(r, &[_]u8{ 'C', 'c' });
+        try consumeMatchAny(r, &[_]u8{ 'H', 'h' });
+        try consumeMatchAny(r, &[_]u8{ 'A', 'a' });
+        try consumeMatchAny(r, &[_]u8{ 'R', 'r' });
+    }
 }
 
 fn parseSortKeyColumns(

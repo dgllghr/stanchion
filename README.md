@@ -38,6 +38,22 @@ FROM dnd_monsters
 WHERE type = 'UNDEAD' AND challenge_rating >= 18;
 ```
 
+## Data types
+
+The following table shows all stanchion data types. Boolean values are converted to the wider (8 bits to 32 bits) representation when passed through stanchion. This allows them to be used from queries and through the SQLite API, which does not support a Boolean type. See [Differences from SQLite: `BOOLEAN` type](#boolean-type) for more information about the `BOOLEAN` type.
+
+There are a small number of alises supported for some of the more widely used data type names.
+
+| Stanchion type  | SQLite type  | Aliases           |
+|-----------------|--------------|-------------------|
+| `BOOLEAN`       | `INTEGER`    | `BOOL`            |
+| `INTEGER`       | `INTEGER`    | `INT`             |
+| `FLOAT`         | `REAL`       | `REAL`, `DOUBLE`  |
+| `BLOB`          | `BLOB`       |                   |
+| `TEXT`          | `TEXT`       | `VARCHAR`[^1]     |
+
+[^1]: Does not support character count
+
 ## Build
 
 [Install Zig (master)](https://ziglang.org/learn/getting-started/#installing-zig) and clone the `stanchion` repository. Then run:
