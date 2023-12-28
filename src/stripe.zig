@@ -76,3 +76,30 @@ pub const Bool = @import("stripe/logical_type/Bool.zig");
 pub const Byte = @import("stripe/logical_type/Byte.zig");
 pub const Int = @import("stripe/logical_type/Int.zig");
 pub const Float = @import("stripe/logical_type/Float.zig");
+
+const std = @import("std");
+const testing = std.testing;
+
+test "stripe: constant encoding is always chosen when it is tied for size" {
+    var bools = Bool.Validator.init();
+    for (0..8) |_| {
+        bools.next(true);
+    }
+    const bools_valid = try bools.end();
+    try testing.expectEqual(Encoding.Constant, bools_valid.meta.encoding);
+
+    var bytes = Byte.Validator.init();
+    bytes.next(1);
+    const bytes_valid = try bytes.end();
+    try testing.expectEqual(Encoding.Constant, bytes_valid.meta.encoding);
+
+    var ints = Int.Validator.init();
+    ints.next(1);
+    const ints_valid = try ints.end();
+    try testing.expectEqual(Encoding.Constant, ints_valid.meta.encoding);
+
+    var floats = Float.Validator.init();
+    floats.next(0.5);
+    const floats_valid = try ints.end();
+    try testing.expectEqual(Encoding.Constant, floats_valid.meta.encoding);
+}

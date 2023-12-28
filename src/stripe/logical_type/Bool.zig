@@ -8,20 +8,20 @@ const constant = @import("../encode/constant.zig");
 const Bool = @This();
 
 const Tag = enum {
-    bit_packed,
     constant,
+    bit_packed,
 };
 
 pub const Validator = Optimizer(struct {
-    bit_packed: bit_packed_bool.Validator,
     constant: constant.Validator(bool, writeDirect),
+    bit_packed: bit_packed_bool.Validator,
 }, Encoder);
 
 pub const Encoder = union(Tag) {
     const Self = @This();
 
-    bit_packed: bit_packed_bool.Encoder,
     constant: constant.Encoder(bool, writeDirect),
+    bit_packed: bit_packed_bool.Encoder,
 
     pub const Value = bool;
 
@@ -53,8 +53,8 @@ pub const Encoder = union(Tag) {
 pub const Decoder = union(Tag) {
     const Self = @This();
 
-    bit_packed: bit_packed_bool.Decoder,
     constant: constant.Decoder(bool, readDirect),
+    bit_packed: bit_packed_bool.Decoder,
 
     pub fn init(encoding: Encoding) !Self {
         return switch (encoding) {

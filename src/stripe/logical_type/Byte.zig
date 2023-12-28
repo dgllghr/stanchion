@@ -8,20 +8,20 @@ const constant = @import("../encode/constant.zig");
 const Byte = @This();
 
 const Tag = enum {
-    direct,
     constant,
+    direct,
 };
 
 pub const Validator = Optimizer(struct {
-    direct: direct.Validator(u8, writeDirect),
     constant: constant.Validator(u8, writeDirect),
+    direct: direct.Validator(u8, writeDirect),
 }, Encoder);
 
 pub const Encoder = union(Tag) {
     const Self = @This();
 
-    direct: direct.Encoder(u8, writeDirect),
     constant: constant.Encoder(u8, writeDirect),
+    direct: direct.Encoder(u8, writeDirect),
 
     pub const Value = u8;
 
@@ -53,8 +53,8 @@ pub const Encoder = union(Tag) {
 pub const Decoder = union(Tag) {
     const Self = @This();
 
-    direct: direct.Decoder(u8, readDirect),
     constant: constant.Decoder(u8, readDirect),
+    direct: direct.Decoder(u8, readDirect),
 
     pub fn init(encoding: Encoding) !Self {
         return switch (encoding) {

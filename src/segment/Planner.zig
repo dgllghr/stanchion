@@ -93,8 +93,7 @@ pub fn end(self: *Self) !Plan {
 
     // Optimization: skip the present stripe if all values present (no nulls) and skip the
     // primary stripe if no values present (all nulls)
-    // TODO ensure Constant encoding is always chosen when all values are the same
-    //      (not guaranteed for a number of booleans that fits in a bit-packed byte)
+    // Constant encoding is always chosen when all values are the same
     var all_nulls = false;
     var no_nulls = false;
     if (present.meta.encoding == .Constant) {

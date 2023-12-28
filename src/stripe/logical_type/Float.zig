@@ -10,10 +10,10 @@ const constant = @import("../encode/constant.zig");
 const Float = @This();
 
 const Tag = enum {
-    direct,
-    /// Constant encoding for floats will only be selected if all floats have the same
-    /// binary representation. This is simple and prioritizes accuracy over encoding size
+    /// Constant encoding for floats will only be selected if all floats have the same binary
+    /// representation. This is simple and prioritizes accuracy over encoding size
     constant,
+    direct,
 };
 
 pub const Validator = Optimizer(struct {
@@ -24,8 +24,8 @@ pub const Validator = Optimizer(struct {
 pub const Encoder = union(Tag) {
     const Self = @This();
 
-    direct: direct.Encoder(f64, writeDirect),
     constant: constant.Encoder(f64, writeDirect),
+    direct: direct.Encoder(f64, writeDirect),
 
     pub const Value = f64;
 
@@ -57,8 +57,8 @@ pub const Encoder = union(Tag) {
 pub const Decoder = union(Tag) {
     const Self = @This();
 
-    direct: direct.Decoder(f64, readDirect),
     constant: constant.Decoder(f64, readDirect),
+    direct: direct.Decoder(f64, readDirect),
 
     pub fn init(encoding: Encoding) !Self {
         return switch (encoding) {

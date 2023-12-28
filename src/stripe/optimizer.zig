@@ -4,8 +4,9 @@ const meta = std.meta;
 const Error = @import("error.zig").Error;
 const Valid = @import("validator.zig").Valid;
 
-/// A Validator that receives other validators as input and chooses the encoding that
-/// results in the smallest byte length for the stripe.
+/// A Validator that receives other validators as input and chooses the encoding that results in
+/// the smallest size for the stripe. If multiple validators have the same byte length, precedence
+/// is given to the validator that is declared earliest in the `Validators` struct.
 pub fn Optimizer(comptime Validators: type, comptime Encoder: type) type {
     const validator_fields = std.meta.fields(Validators);
     if (validator_fields.len == 0) {
@@ -48,6 +49,9 @@ pub fn Optimizer(comptime Validators: type, comptime Encoder: type) type {
             inline for (validator_fields) |f| {
                 const validator = &@field(self.validators, f.name);
                 if (validator.end()) |v| {
+                    // It's important that this comparison is `<` so that if multiple encodings
+                    // result in the same size, the encoding declared earliest in the struct is
+                    // chosen
                     if (v.meta.byte_len < valid.meta.byte_len) {
                         found_valid = true;
                         valid.meta = v.meta;
