@@ -1,22 +1,10 @@
 const std = @import("std");
+const Build = std.Build;
+const Compile = Build.Step.Compile;
+const CrossTarget = std.zig.CrossTarget;
+const OptimizeMode = std.builtin.OptimizeMode;
 
-// Although this function looks imperative, note that its job is to
-// declaratively construct a build graph that will be executed by an external
-// runner.
-pub fn build(b: *std.Build) void {
-    // Standard target options allows the person running `zig build` to choose
-    // what target to build for. Here we do not override the defaults, which
-    // means any target is allowed, and the default is native. Other options
-    // for restricting supported target set are available.
-    const target = b.standardTargetOptions(.{});
-
-    // Standard optimization options allow the person running `zig build` to select
-    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
-    // set a preferred release mode, allowing the user to decide how to optimize.
-    const optimize = b.standardOptimizeOption(.{});
-
-    // Loadable extension
-
+pub fn buildLoadableExt(b: *Build, target: CrossTarget, optimize: OptimizeMode) *Compile {
     const loadable_ext = b.addSharedLibrary(.{
         .name = "stanchion",
         .root_source_file = .{ .path = "src/main.zig" },
@@ -31,12 +19,34 @@ pub fn build(b: *std.Build) void {
         .flags = &[_][]const u8{"-std=c99"},
     });
     loadable_ext.addIncludePath(.{ .path = "src/sqlite3/c" });
+
     // TODO add anonymous module?
     //      https://github.com/vrischmann/zig-sqlite/blob/193240aa5ecc9c9b14b25dec662505d5cf9f5340/build.zig#L350
     const loadable_ext_options = b.addOptions();
     loadable_ext.addOptions("build_options", loadable_ext_options);
     loadable_ext_options.addOption(bool, "loadable_extension", true);
 
+    return loadable_ext;
+}
+
+// Although this function looks imperative, note that its job is to
+// declaratively construct a build graph that will be executed by an external
+// runner.
+pub fn build(b: *Build) void {
+    // Standard target options allows the person running `zig build` to choose
+    // what target to build for. Here we do not override the defaults, which
+    // means any target is allowed, and the default is native. Other options
+    // for restricting supported target set are available.
+    const target = b.standardTargetOptions(.{});
+
+    // Standard optimization options allow the person running `zig build` to select
+    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
+    // set a preferred release mode, allowing the user to decide how to optimize.
+    const optimize = b.standardOptimizeOption(.{});
+
+    // Loadable extension
+
+    const loadable_ext = buildLoadableExt(b, target, optimize);
     const install_loadable_ext = b.addInstallArtifact(loadable_ext, .{});
 
     const loadable_ext_build = b.step("ext", "Build the 'stanchion' sqlite loadable extension");
@@ -68,9 +78,10 @@ pub fn build(b: *std.Build) void {
         "bash", "test/runtest.sh",
     });
     // Build the loadable extension and then run the integration test script
-    // TODO build the loadable extension in one of the release modes
+    const loadable_ext_itest = buildLoadableExt(b, target, .ReleaseFast);
+    const install_loadable_ext_itest = b.addInstallArtifact(loadable_ext_itest, .{});
     const integration_test_step = b.step("itest", "Run integration tests");
-    run_integration_tests.step.dependOn(&install_loadable_ext.step);
+    run_integration_tests.step.dependOn(&install_loadable_ext_itest.step);
     integration_test_step.dependOn(&run_integration_tests.step);
 
     // Benchmarks
