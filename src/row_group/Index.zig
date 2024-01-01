@@ -129,7 +129,7 @@ const CreateTableDdlFormatter = struct {
         // TODO partial unique index on table status entry?
         // TODO in tests it would be nice to add some check constraints to ensure
         //      data is populated correctly based on the entry_type
-        try writer.print(") STRICT, WITHOUT ROWID", .{});
+        try writer.print(") WITHOUT ROWID", .{});
     }
 };
 

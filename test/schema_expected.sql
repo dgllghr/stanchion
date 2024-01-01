@@ -5,4 +5,4 @@ CREATE TABLE planets (
     gravity REAL NULL,
     name TEXT NOT NULL,
     PRIMARY KEY (quadrant, sector, name)
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID;

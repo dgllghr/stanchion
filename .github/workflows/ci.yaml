@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  # Cancels pending runs when a PR gets updated.
+  group: ${{ github.head_ref || github.run_id }}-${{ github.actor }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ "ubuntu-latest", "macos-latest", "windows-latest" ]
+        sqlite:
+          - version: 3.21.0
+            year: 2017
+          - version: 3.44.2
+            year: 2023
+    runs-on: ${{ matrix.os }}
+    env:
+      SQLITE_VERSION: ${{ matrix.sqlite.version }}
+      SQLITE_YEAR: ${{ matrix.sqlite.year }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/deps
+            zig-cache
+            ~/.cache/zig
+            ~/AppData/Local/zig
+          key: test-${{ runner.os }}-sqlite-${{ matrix.sqlite.version }}
+
+      - name: Test (Linux)
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: sh ci/linux-x86_64-test.sh
+
+      - name: Test (MacOS)
+        if: ${{ matrix.os == 'macos-latest' }}
+        run: ci/macos-x86_64-test.sh
+
+      - name: Test (Windows)
+        if: ${{ matrix.os == 'windows-latest' }}
+        run: ci/windows-x86_64-test.ps1

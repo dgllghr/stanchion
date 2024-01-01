@@ -99,7 +99,7 @@ const CreateTableDdlFormatter = struct {
             try writer.print("col_{d},", .{col_rank});
         }
         try writer.print("rowid)", .{});
-        try writer.print(") STRICT, WITHOUT ROWID", .{});
+        try writer.print(") WITHOUT ROWID", .{});
     }
 };
 

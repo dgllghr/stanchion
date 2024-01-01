@@ -29,7 +29,7 @@ pub fn create(tmp_arena: *ArenaAllocator, conn: Conn, vtab_table_name: []const u
         \\  key INTEGER NOT NULL,
         \\  value ANY NOT NULL,
         \\  PRIMARY KEY (key)
-        \\) STRICT
+        \\)
     , .{vtab_table_name});
     try conn.exec(ddl);
 

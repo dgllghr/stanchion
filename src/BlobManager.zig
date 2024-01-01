@@ -47,7 +47,7 @@ fn setup(tmp_arena: *ArenaAllocator, conn: Conn, vtab_table_name: []const u8) !v
         \\CREATE TABLE IF NOT EXISTS "{s}_blobs" (
         \\  id INTEGER NOT NULL PRIMARY KEY,
         \\  blob BLOB NOT NULL
-        \\) STRICT
+        \\)
     , .{vtab_table_name});
     try conn.exec(query);
 }

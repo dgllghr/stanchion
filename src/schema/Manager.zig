@@ -47,7 +47,7 @@ fn setup(tmp_arena: *ArenaAllocator, conn: Conn, vtab_table_name: []const u8) !v
         \\  sk_rank INTEGER NULL,
         \\  PRIMARY KEY (rank),
         \\  UNIQUE (name)
-        \\) STRICT, WITHOUT ROWID
+        \\) WITHOUT ROWID
     , .{vtab_table_name});
     try conn.exec(query);
 }

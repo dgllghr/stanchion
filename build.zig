@@ -11,6 +11,11 @@ pub fn buildLoadableExt(b: *Build, target: CrossTarget, optimize: OptimizeMode) 
         .target = target,
         .optimize = optimize,
     });
+    // TODO remove when issue is resolved:
+    //      https://github.com/ziglang/zig/issues/7935
+    if (target.cpu_arch == .x86) {
+        loadable_ext.link_z_notext = true;
+    }
     loadable_ext.force_pic = true;
     // TODO remove when issue is resolved:
     //      https://github.com/ziglang/zig/issues/15893
@@ -20,8 +25,6 @@ pub fn buildLoadableExt(b: *Build, target: CrossTarget, optimize: OptimizeMode) 
     });
     loadable_ext.addIncludePath(.{ .path = "src/sqlite3/c" });
 
-    // TODO add anonymous module?
-    //      https://github.com/vrischmann/zig-sqlite/blob/193240aa5ecc9c9b14b25dec662505d5cf9f5340/build.zig#L350
     const loadable_ext_options = b.addOptions();
     loadable_ext.addOptions("build_options", loadable_ext_options);
     loadable_ext_options.addOption(bool, "loadable_extension", true);
@@ -59,6 +62,7 @@ pub fn build(b: *Build) void {
         .target = target,
         .optimize = optimize,
     });
+    main_tests.linkLibC();
     main_tests.addCSourceFile(.{
         .file = .{ .path = "src/sqlite3/c/sqlite3.c" },
         .flags = &[_][]const u8{"-std=c99"},
@@ -92,6 +96,7 @@ pub fn build(b: *Build) void {
         .target = target,
         .optimize = .ReleaseFast,
     });
+    benches.linkLibC();
     benches.addCSourceFile(.{
         .file = .{ .path = "src/sqlite3/c/sqlite3.c" },
         .flags = &[_][]const u8{"-std=c99"},
