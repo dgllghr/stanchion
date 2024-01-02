@@ -3,7 +3,7 @@ const fmt = std.fmt;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
-const ArrayListUnmanaged = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 
 const sqlite = @import("../sqlite3.zig");
 const Conn = sqlite.Conn;
@@ -68,11 +68,12 @@ pub fn load(self: *Self, table_static_arena: *ArenaAllocator, tmp_arena: *ArenaA
     const stmt = try self.load_columns.acquire(tmp_arena, self);
     defer self.load_columns.release();
 
-    var columns = ArrayListUnmanaged(Column){};
+    var columns = ArrayList(Column).init(tmp_arena.allocator());
+    defer columns.deinit();
     var sort_key_len: usize = 0;
     while (try stmt.next()) {
         const col = try readColumn(table_static_arena.allocator(), stmt);
-        try columns.append(tmp_arena.allocator(), col);
+        try columns.append(col);
         if (col.sk_rank) |_| {
             sort_key_len += 1;
         }
@@ -86,7 +87,7 @@ pub fn load(self: *Self, table_static_arena: *ArenaAllocator, tmp_arena: *ArenaA
     }
 
     return .{
-        .columns = try columns.toOwnedSlice(table_static_arena.allocator()),
+        .columns = try table_static_arena.allocator().dupe(Column, columns.items),
         .sort_key = sort_key,
     };
 }
