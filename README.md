@@ -1,14 +1,20 @@
 # Stanchion
 
-Column-oriented tables in SQLite.
+Column-oriented tables in SQLite
 
-Stanchion is a SQLite extension that makes it possible to have column-oriented tables using SQLite's [virtual table](https://www.sqlite.org/vtab.html) mechanism.
+## Why?
 
-## Status
+Stanchion is a SQLite 3 extension that brings the power of column-oriented storage to SQLite, the most widely deployed database. SQLite exclusively supports row-oriented tables, which means it is not an ideal fit for all workloads. Using the Stanchion plugin brings all of the benefits of column-oriented storage and data warehousing to anywhere that SQLite is already deployed, including your existing tech stack.
 
-Stanchion is in *alpha*. The storage format may change in backwards incompatible ways. **Do not use this in production**... yet.
+There are a number of situations where column-oriented storage outperforms row-oriented storage:
+* Storing and processing metric, log, and event data
+* Timeseries data storage and analysis
+* Analytical queries over many rows and a few columns (e.g. calculating the average temperature over months of hourly weather data)
+* Change tracking, history/temporal tables
 
-## Usage
+Stanchion is an ideal fit for analytical queries and wide tables because it only scans data from the columns that are referenced by a given query. It uses compression techniques like run length and bit-packed encodings that significantly reduce the size of stored data, greatly reducing the cost of large data sets. This makes it an ideal solution for storing large, expanding datasets.
+
+## Example
 
 ```sql
 .load ./stanchion
@@ -38,37 +44,97 @@ FROM dnd_monsters
 WHERE type = 'UNDEAD' AND challenge_rating >= 18;
 ```
 
-## Data types
+## Status
 
-The following table shows all stanchion data types. Boolean values are converted to the wider (8 bits to 32 bits) representation when passed through stanchion. This allows them to be used from queries and through the SQLite API, which does not support a Boolean type. See [Differences from SQLite: `BOOLEAN` type](#boolean-type) for more information about the `BOOLEAN` type.
-
-There are a small number of alises supported for some of the more widely used data type names.
-
-| Stanchion type  | SQLite type  | Aliases           |
-|-----------------|--------------|-------------------|
-| `BOOLEAN`       | `INTEGER`    | `BOOL`            |
-| `INTEGER`       | `INTEGER`    | `INT`             |
-| `FLOAT`         | `REAL`       | `REAL`, `DOUBLE`  |
-| `BLOB`          | `BLOB`       |                   |
-| `TEXT`          | `TEXT`       | `VARCHAR`[^1]     |
-
-[^1]: Does not support character count
+Stanchion is in *alpha*. Things may not be fully working. The storage format may change in backwards incompatible ways. **Do not use this in production**... yet.
 
 ## Build
 
 [Install Zig (master)](https://ziglang.org/learn/getting-started/#installing-zig) and clone the `stanchion` repository. Then run:
 
 ```shell
-zig build ext
+zig build ext -Doptimize=ReleaseFast
 ```
 
 The SQLite extension is the dynamic library named `libstanchion` in the `zig-out` directory.
+
+Building from source is currently the only way to use stanchion.
+
+## Usage
+
+### Load Stanchion
+
+Stanchion is a [Run-Time Loadable Extension](https://sqlite.org/loadext.html) that uses SQLite's virtual table system. Currently, stanchion must be loaded by all connections that access any stanchion virtual tables. This may change in the future when stanchion supports being a [Persistent Loadable Extension](https://sqlite.org/loadext.html#persistent_loadable_extensions). To load an extension from the SQLite CLI, use the `.load` command. Check the documentation of the SQLite bindings you are using to see how to load an extension in your application. Here are some examples for different language bindings: [`sqlite3` for Python](https://docs.python.org/3/library/sqlite3.html#sqlite3.Connection.load_extension), [`rusqlite` for Rust](https://docs.rs/rusqlite/latest/rusqlite/struct.Connection.html#method.load_extension), [`sqlite3` for Ruby](https://rubydoc.info/gems/sqlite3/SQLite3/Database#load_extension-instance_method), and [`go-sqlite3` for Go](https://pkg.go.dev/github.com/mattn/go-sqlite3#SQLiteConn.LoadExtension).
+
+Before loading stanchion (or any extension), you may first need to enable extension loading. Here are some examples for different language bindings: [`sqlite3` for Python](https://docs.python.org/3/library/sqlite3.html#sqlite3.Connection.enable_load_extension), [`rusqlite` for Rust](https://docs.rs/rusqlite/latest/rusqlite/struct.LoadExtensionGuard.html), and [`sqlite3` for Ruby](https://rubydoc.info/gems/sqlite3/SQLite3/Database#enable_load_extension-instance_method). Some bindings enable extension loading by default (e.g. [`go-sqlite3` for Go](https://github.com/mattn/go-sqlite3#feature--extension-list)). For more information, see the [SQLite documentation for the C API](https://sqlite.org/c3ref/enable_load_extension.html).
+
+### Create table
+
+Creating a stanchion table works much like creating any table in SQLite:
+
+```sql
+CREATE VIRTUAL TABLE sensor_log USING stanchion (
+    sensor_id TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    value FLOAT NULL,
+    variance FLOAT NULL,
+    severity INTEGER NOT NULL,
+    SORT KEY (sensor_id, timestamp)
+)
+```
+
+The `USING stanchion` phrase tells SQLite to create `sensor_log` as a virtual table that is implemented by stanchion.
+
+The `SORT KEY` is required for all stanchion tables. It defines the clustered index, the order of the records in the table. The `SORT KEY` does not enforce uniqueness.
+
+Stanchion tables do not support foreign keys, primary keys, check, or unique constraints. These constraints are generally less useful in the scenarios that column-oriented tables are more useful and they are not widely supported across column-oriented databases. However, some of or all of these constraints may be introduced to stanchion in the future as options.
+
+#### Data types
+
+The following table shows all stanchion data types. Boolean values are converted to integers when passed through SQLite. This allows them to be used from queries and through the SQLite API, which does not support a dedicated Boolean type. See [Differences from SQLite: `BOOLEAN` type](#boolean-type) for more information about the `BOOLEAN` type.
+
+| Stanchion type  | SQLite type  | Aliases              |
+|-----------------|--------------|----------------------|
+| `BOOLEAN`       | `INTEGER`    | `BOOL`               |
+| `INTEGER`       | `INTEGER`    | `INT`                |
+| `FLOAT`         | `REAL`       | `REAL`, `DOUBLE`     |
+| `BLOB`          | `BLOB`       |                      |
+| `TEXT`          | `TEXT`       | `VARCHAR`<sup>*</sup>|
+
+<sub>* Does not support character count</sub>
+
+There is no `ANY` type and all inserted values must match the declared column type. It is not possible to do dynamic typing in stanchion tables. Stanchion tables are roughly equivalent to SQLite tables declared as `STRICT` (without the any type).
+
+There are a small number of aliases supported for widely used type names. Declaring a column with an alias is no different than declaring it with the canonical type name.
+
+### Add and query data
+
+Inserting and querying data works like any other table in SQLite. Stanchion tables even work with features like the `.import` command for adding records to tables.
+
+```sql
+INSERT INTO sensor_log (sensor_id, timestamp, value, variance, severity)
+VALUES
+    (2064, 12433702443, 74.37, 1.06, 1),
+    (2064, 12433703443, 73.12, 0.96, 1)
+```
+
+Values being inserted into Stanchion tables must be of the column's declared type. This is equivalent to declaring a SQLite table with the `STRICT` table option.
+
+*Updating and deleting records is not currently supported. Support for update and delete will be added in the future.*
+
+Stanchion tables can be used in all places that native tables can be used in SQLite. Consider the `SORT KEY` as a composite index when writing queries to improve query performance. In the following query, the sort key is used to reduce the amount of data scanned. And of course, only the `sensor_id`, `timestamp`, and `value` columns are read at all.
+
+```sql
+SELECT AVG(value)
+FROM sensor_log
+WHERE sensor_id = 2064 AND timestamp > 12433700000
+```
 
 ## Differences from SQLite
 
 ### `BOOLEAN` type
 
-Stanchion has a dedicated `BOOLEAN` type. Boolean values are used within stanchion as part of each nullable segment (see [Row Groups and Segments](#row-groups-segments-and-stripes)) and exposed so it can also be used directly.
+Stanchion has a dedicated `BOOLEAN` type. Boolean values are used within stanchion as part of each nullable segment and exposed so it can also be used directly.
 
 SQLite uses `INTEGER` to represent booleans. Stanchion converts `BOOLEAN` values to from `INTEGER` values when passed through SQLite. Querying a `BOOLEAN` stanchion column returns `INTEGER` SQLite values.
 
@@ -84,13 +150,21 @@ This may change in the future. Implementing these will likely require external i
 
 ### No external indexes
 
-There is currently no external index mechanism. See [The primary index](#the-primary-index) for details on how stanchion indexes data and what queries can be made more efficient by those indexes.
+There is currently no external index mechanism. The only index that is used to optimize queries is the clustered index, declared with `SORT KEY`.
 
 ### Column types are enforced
 
 Values being inserted into Stanchion tables must be of the column's declared type. This is equivalent to declaring a SQLite table with the `STRICT` table option.
 
-## Data storage
+### No support for updates or deletes (yet)
+
+Support for `UPDATE` and `DELETE` will be added to stanchion in the future.
+
+### Table schemas cannot be altered
+
+This is something that stanchion would like to support, but it may be difficult because SQLite does not have a documented way of supporting schema changes to virtual tables. This is still being investigaed.
+
+## Data Storage Internals
 
 ### Row groups, segments, and stripes
 
