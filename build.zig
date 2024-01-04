@@ -1,10 +1,9 @@
 const std = @import("std");
 const Build = std.Build;
 const Compile = Build.Step.Compile;
-const CrossTarget = std.zig.CrossTarget;
 const OptimizeMode = std.builtin.OptimizeMode;
 
-pub fn buildLoadableExt(b: *Build, target: CrossTarget, optimize: OptimizeMode) *Compile {
+pub fn buildLoadableExt(b: *Build, target: Build.ResolvedTarget, optimize: OptimizeMode) *Compile {
     const loadable_ext = b.addSharedLibrary(.{
         .name = "stanchion",
         .root_source_file = .{ .path = "src/main.zig" },
@@ -13,10 +12,11 @@ pub fn buildLoadableExt(b: *Build, target: CrossTarget, optimize: OptimizeMode) 
     });
     // TODO remove when issue is resolved:
     //      https://github.com/ziglang/zig/issues/7935
-    if (target.cpu_arch == .x86) {
+    if (target.result.cpu.arch == .x86) {
         loadable_ext.link_z_notext = true;
     }
-    loadable_ext.force_pic = true;
+    // TODO should this be added back somehow?
+    //loadable_ext.force_pic = true;
     // TODO remove when issue is resolved:
     //      https://github.com/ziglang/zig/issues/15893
     loadable_ext.addCSourceFile(.{
@@ -26,7 +26,7 @@ pub fn buildLoadableExt(b: *Build, target: CrossTarget, optimize: OptimizeMode) 
     loadable_ext.addIncludePath(.{ .path = "src/sqlite3/c" });
 
     const loadable_ext_options = b.addOptions();
-    loadable_ext.addOptions("build_options", loadable_ext_options);
+    loadable_ext.root_module.addOptions("build_options", loadable_ext_options);
     loadable_ext_options.addOption(bool, "loadable_extension", true);
 
     return loadable_ext;
@@ -69,7 +69,7 @@ pub fn build(b: *Build) void {
     });
     main_tests.addIncludePath(.{ .path = "src/sqlite3/c" });
     const main_tests_options = b.addOptions();
-    main_tests.addOptions("build_options", main_tests_options);
+    main_tests.root_module.addOptions("build_options", main_tests_options);
     main_tests_options.addOption(bool, "loadable_extension", false);
 
     const run_main_tests = b.addRunArtifact(main_tests);
@@ -103,7 +103,7 @@ pub fn build(b: *Build) void {
     });
     benches.addIncludePath(.{ .path = "src/sqlite3/c" });
     const benches_options = b.addOptions();
-    benches.addOptions("build_options", benches_options);
+    benches.root_module.addOptions("build_options", benches_options);
     benches_options.addOption(bool, "loadable_extension", false);
 
     const run_benches = b.addRunArtifact(benches);
