@@ -40,7 +40,9 @@ const MemoryTuple = value_mod.MemoryTuple;
 const PendingInserts = @import("../PendingInserts.zig");
 const PendingInsertsCursor = PendingInserts.Cursor;
 
-const CursorRange = @import("../CursorRange.zig");
+const index_mod = @import("../index.zig");
+const RangeOp = index_mod.RangeOp;
+const SortKeyRange = index_mod.SortKeyRange;
 
 conn: Conn,
 vtab_table_name: []const u8,
@@ -331,15 +333,16 @@ fn cursorQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
     });
 }
 
-pub fn cursorPartial(self: *Self, tmp_arena: *ArenaAllocator, range: CursorRange) !EntriesCursor {
+pub fn cursorPartial(self: *Self, tmp_arena: *ArenaAllocator, range: SortKeyRange) !EntriesCursor {
     const query = try self.cursorPartialQuery(tmp_arena, range);
     const stmt = self.conn.prepare(query) catch |e| {
         std.log.debug("{s}", .{self.conn.lastErrMsg()});
         return e;
     };
 
-    for (0..range.key.valuesLen()) |idx| {
-        const value = try range.key.readValue(idx);
+    for (0..range.args.valuesLen()) |idx| {
+        const value = try range.args.readValue(idx);
+        std.log.debug("value {}", .{value});
         try value.bind(stmt, idx + 1);
     }
 
@@ -352,19 +355,20 @@ pub fn cursorPartial(self: *Self, tmp_arena: *ArenaAllocator, range: CursorRange
     };
 }
 
-fn cursorPartialQuery(self: *const Self, arena: *ArenaAllocator, range: CursorRange) ![]const u8 {
+fn cursorPartialQuery(self: *const Self, arena: *ArenaAllocator, range: SortKeyRange) ![]const u8 {
     // TODO these queries need to be dynamically generated to account for varying lengths of
     //      the key and the different comparison ops (and all combinations of those). However,
     //      these queries may benefit from a dynamic cache keyed by the sort key length and the
     //      last op. This is likely to help due to common user/application common access
     //      patterns
     return switch (range.last_op) {
-        .lt, .le => cursorPartialLtLe(self, arena, range),
-        .eq, .gt, .ge => cursorPartialEqGtGe(self, arena, range),
+        .to_inc, .to_exc => self.cursorPartialLtLe(arena, range),
+        .eq, .from_inc, .from_exc => self.cursorPartialEqGtGe(arena, range),
+        .between => self.cursorPartialBetween(arena, range),
     };
 }
 
-fn cursorPartialLtLe(self: *const Self, arena: *ArenaAllocator, range: CursorRange) ![]const u8 {
+fn cursorPartialLtLe(self: *const Self, arena: *ArenaAllocator, range: SortKeyRange) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
         \\SELECT record_count, rowid_segment_id, {}, {}, start_rowid_value
         \\FROM "{s}_rowgroupindex"
@@ -374,14 +378,14 @@ fn cursorPartialLtLe(self: *const Self, arena: *ArenaAllocator, range: CursorRan
         sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = self.columns_len },
         sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = self.sort_key.len },
         self.vtab_table_name,
-        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = range.key.valuesLen() },
+        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = range.args.valuesLen() },
         lastOpSymbol(range.last_op),
-        sql_fmt.ParameterListFormatter{ .len = range.key.valuesLen() },
+        sql_fmt.ParameterListFormatter{ .len = range.args.valuesLen() },
         sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = self.sort_key.len },
     });
 }
 
-fn cursorPartialEqGtGe(self: *const Self, arena: *ArenaAllocator, range: CursorRange) ![]const u8 {
+fn cursorPartialEqGtGe(self: *const Self, arena: *ArenaAllocator, range: SortKeyRange) ![]const u8 {
     // These filters need to consider that the minimum value that should be included in the
     // result set is in a row group that has a starting sort key that comes before the
     // minimum value.
@@ -393,6 +397,7 @@ fn cursorPartialEqGtGe(self: *const Self, arena: *ArenaAllocator, range: CursorR
         \\  FROM "{s}_rowgroupindex" rgi
         \\  JOIN sort_key_values skv
         \\  WHERE ({s}) < ({s})
+        \\  ORDER BY {}, rgi.start_rowid_value DESC
         \\  LIMIT 1
         \\)
         \\SELECT *
@@ -406,37 +411,98 @@ fn cursorPartialEqGtGe(self: *const Self, arena: *ArenaAllocator, range: CursorR
         \\  FROM "{s}_rowgroupindex" rgi
         \\  JOIN sort_key_values skv
         \\  WHERE ({}) {s} ({})
-        \\  ORDER BY {}, start_rowid_value DESC
+        \\  ORDER BY {}, start_rowid_value
         \\)
     , .{
         // sort_key_values CTE
-        sql_fmt.ColumnListLenFormatter("? AS sk_value_{d}"){ .len = range.key.valuesLen() },
+        sql_fmt.ColumnListLenFormatter("? AS sk_value_{d}"){ .len = range.args.valuesLen() },
         // first_row_group CTE
         sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = self.columns_len },
         sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = self.sort_key.len },
         self.vtab_table_name,
-        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = range.key.valuesLen() },
-        sql_fmt.ColumnListLenFormatter("skv.sk_value_{d}"){ .len = range.key.valuesLen() },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = range.args.valuesLen() },
+        sql_fmt.ColumnListLenFormatter("skv.sk_value_{d}"){ .len = range.args.valuesLen() },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d} DESC"){ .len = self.sort_key.len },
         // main query
         sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = self.columns_len },
         sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = self.sort_key.len },
         sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = self.columns_len },
         sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
         self.vtab_table_name,
-        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = range.key.valuesLen() },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = range.args.valuesLen() },
         lastOpSymbol(range.last_op),
-        sql_fmt.ColumnListLenFormatter("skv.sk_value_{d}"){ .len = range.key.valuesLen() },
+        sql_fmt.ColumnListLenFormatter("skv.sk_value_{d}"){ .len = range.args.valuesLen() },
         sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
     });
 }
 
-fn lastOpSymbol(last_op: CursorRange.LastOp) []const u8 {
+fn lastOpSymbol(last_op: RangeOp) []const u8 {
     return switch (last_op) {
-        .lt => "<",
-        .le => "<=",
+        .to_exc => "<",
+        .to_inc => "<=",
         .eq => "=",
-        .gt, .ge => ">=",
+        .from_inc, .from_exc => ">=",
+        else => unreachable,
     };
+}
+
+fn cursorPartialBetween(
+    self: *const Self,
+    arena: *ArenaAllocator,
+    range: SortKeyRange,
+) ![]const u8 {
+    const args_len = range.args.valuesLen();
+
+    // The last two values are the upper and lower bounds of the range, so they apply to the same
+    // column.
+    const upper_bound_indices = try arena.allocator()
+        .alloc(usize, args_len - 1);
+    for (0..(args_len - 2)) |i| {
+        upper_bound_indices[i] = i;
+    }
+    upper_bound_indices[args_len - 2] = args_len - 1;
+
+    // This filters need to consider that the minimum value that should be included in the result
+    // set is in a row group that has a starting sort key that comes before the lower bound value.
+    return fmt.allocPrintZ(arena.allocator(),
+        \\WITH sort_key_values AS (
+        \\  SELECT {s}
+        \\), first_row_group AS (
+        \\  SELECT {}, start_rowid_value
+        \\  FROM "{s}_rowgroupindex" rgi
+        \\  JOIN sort_key_values skv
+        \\  WHERE ({s}) < ({s})
+        \\  ORDER BY {}, rgi.start_rowid_value DESC
+        \\  LIMIT 1
+        \\)
+        \\SELECT rgi.record_count, rgi.rowid_segment_id, {}, {}, rgi.start_rowid_value
+        \\FROM "{s}_rowgroupindex" rgi
+        \\JOIN sort_key_values skv
+        \\LEFT JOIN first_row_group frg
+        \\WHERE (frg.start_rowid_value IS NULL OR
+        \\          ({}, rgi.start_rowid_value) >= ({}, frg.start_rowid_value)) AND
+        \\      ({}) {s} ({})
+        \\ORDER BY {}, rgi.start_rowid_value
+    , .{
+        // sort_key_values CTE
+        sql_fmt.ColumnListLenFormatter("? AS sk_value_{d}"){ .len = args_len },
+        // first_row_group CTE
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
+        self.vtab_table_name,
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = args_len - 1 },
+        sql_fmt.ColumnListLenFormatter("skv.sk_value_{d}"){ .len = args_len - 1 },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d} DESC"){ .len = self.sort_key.len },
+        // main query
+        sql_fmt.ColumnListLenFormatter("rgi.col_{d}_segment_id"){ .len = self.columns_len },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
+        self.vtab_table_name,
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
+        sql_fmt.ColumnListLenFormatter("frg.start_sk_value_{d}"){ .len = self.sort_key.len },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = args_len - 1 },
+        if (range.last_op.between.upper_inc) "<=" else "<",
+        sql_fmt.ColumnListIndicesFormatter("skv.sk_value_{d}"){ .indices = upper_bound_indices },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
+    });
 }
 
 pub const MergeCandidateCursor = struct {

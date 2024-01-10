@@ -253,7 +253,7 @@ test "segment: reader" {
     var reader = try Self.init(&blob_handle, .Integer);
     for (0..10) |idx| {
         const value = try reader.read(std.testing.allocator);
-        try std.testing.expectEqual(idx, @intCast(value.asI64()));
+        try std.testing.expectEqual(idx, @as(usize, @intCast(value.asI64())));
         try reader.next();
     }
 }

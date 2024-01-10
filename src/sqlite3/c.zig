@@ -18,7 +18,7 @@ pub fn versionGreaterThanOrEqualTo(major: u8, minor: u8, patch: u8) bool {
 }
 
 comptime {
-    if (!versionGreaterThanOrEqualTo(3, 21, 0)) {
-        @compileError("must use SQLite >= 3.21.0");
+    if (!versionGreaterThanOrEqualTo(3, 23, 1)) {
+        @compileError("must use SQLite >= 3.23.1");
     }
 }

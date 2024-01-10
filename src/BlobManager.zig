@@ -106,8 +106,9 @@ pub fn create(self: *Self, tmp_arena: *ArenaAllocator, size: u32) !Handle {
     defer self.insert_stmt.release();
 
     try stmt.bind(.Int64, 1, @as(i64, @intCast(size)));
-    _ = try stmt.next();
-    const id = stmt.read(.Int64, false, 0);
+
+    try stmt.exec();
+    const id = self.conn.lastInsertRowid();
     errdefer self.delete(tmp_arena, id) catch |e| {
         log.err("unable to destroy segment {}: {}", .{ id, e });
     };
@@ -124,7 +125,6 @@ fn insertDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
         \\INSERT INTO "{s}" (blob)
         \\VALUES (ZEROBLOB(?))
-        \\RETURNING id
     , .{self.table_name});
 }
 

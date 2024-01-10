@@ -7,4 +7,6 @@ SELECT 'Gamma', sector, size, gravity, name || ' II'
 FROM planets
 WHERE sector > 100 AND sector <= 500;
 
-SELECT * FROM planets ORDER BY quadrant, sector, name
+SELECT * FROM planets ORDER BY quadrant, sector, name;
+
+SELECT * FROM planets WHERE quadrant = 'Gamma' AND sector = 286 ORDER BY quadrant, sector, name;

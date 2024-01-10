@@ -82,7 +82,7 @@ pub fn build(b: *Build) void {
         "bash", "test/runtest.sh",
     });
     // Build the loadable extension and then run the integration test script
-    const loadable_ext_itest = buildLoadableExt(b, target, .ReleaseFast);
+    const loadable_ext_itest = buildLoadableExt(b, target, .Debug);
     const install_loadable_ext_itest = b.addInstallArtifact(loadable_ext_itest, .{});
     const integration_test_step = b.step("itest", "Run integration tests");
     run_integration_tests.step.dependOn(&install_loadable_ext_itest.step);

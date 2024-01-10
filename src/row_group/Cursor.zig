@@ -39,8 +39,6 @@ const MemoryTuple = value_mod.MemoryTuple;
 const PendingInserts = @import("../PendingInserts.zig");
 const PendingInsertsCursor = PendingInserts.Cursor;
 
-const CursorRange = @import("../CursorRange.zig");
-
 const Index = @import("Index.zig");
 
 blob_manager: *BlobManager,

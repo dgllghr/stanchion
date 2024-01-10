@@ -19,7 +19,10 @@ const DataType = schema_mod.ColumnType.DataType;
 const Schema = schema_mod.Schema;
 
 const TableData = @import("TableData.zig");
-const CursorRange = @import("CursorRange.zig");
+
+const index_mod = @import("index.zig");
+const RangeOp = index_mod.RangeOp;
+const SortKeyRange = index_mod.SortKeyRange;
 
 conn: Conn,
 vtab_table_name: []const u8,
@@ -256,7 +259,7 @@ pub const Cursor = struct {
 
     pub fn rewind(self: *Cursor) !void {
         try self.stmt.resetExec();
-        self.is_eof = !(try self.stmt.next());
+        try self.next();
     }
 
     pub fn readRowid(self: Cursor) !ValueRef {
@@ -307,7 +310,6 @@ fn cursorFromStartQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
 }
 
 /// Only 1 pending inserts cursor can be open at a time
-/// TODO use a pool of stmts to allow for multiple cursors at once
 pub fn cursorFrom(
     self: *Self,
     tmp_arena: *ArenaAllocator,
@@ -346,12 +348,12 @@ fn cursorFromKeyQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
     });
 }
 
-pub fn cursorPartial(self: *Self, tmp_arena: *ArenaAllocator, range: CursorRange) !Cursor {
+pub fn cursorPartial(self: *Self, tmp_arena: *ArenaAllocator, range: SortKeyRange) !Cursor {
     const query = try self.cursorPartialQuery(tmp_arena, range);
     const stmt = try self.conn.prepare(query);
 
-    for (0..range.key.valuesLen()) |idx| {
-        const value = try range.key.readValue(idx);
+    for (0..range.args.valuesLen()) |idx| {
+        const value = try range.args.readValue(idx);
         try value.bind(stmt, idx + 1);
     }
 
@@ -364,30 +366,69 @@ pub fn cursorPartial(self: *Self, tmp_arena: *ArenaAllocator, range: CursorRange
     };
 }
 
-fn cursorPartialQuery(self: *const Self, arena: *ArenaAllocator, range: CursorRange) ![]const u8 {
-    const key_len = range.key.valuesLen();
-    return fmt.allocPrintZ(arena.allocator(),
-        \\SELECT rowid, {}
-        \\FROM "{s}_pendinginserts"
-        \\WHERE ({}) {s} ({})
-        \\ORDER BY {}, rowid
-    , .{
-        sql_fmt.ColumnListLenFormatter("col_{d}"){ .len = self.columns_len },
-        self.vtab_table_name,
-        sql_fmt.ColumnListIndicesFormatter("col_{d}"){ .indices = self.sort_key[0..key_len] },
-        lastOpSymbol(range.last_op),
-        sql_fmt.ParameterListFormatter{ .len = key_len },
-        sql_fmt.ColumnListIndicesFormatter("col_{d}"){ .indices = self.sort_key },
-    });
+fn cursorPartialQuery(self: *const Self, arena: *ArenaAllocator, range: SortKeyRange) ![]const u8 {
+    const args_len = range.args.valuesLen();
+    switch (range.last_op) {
+        .between => |between| {
+            const upper_bound_indices = try arena.allocator()
+                .alloc(usize, args_len - 1);
+            for (0..(args_len - 2)) |i| {
+                upper_bound_indices[i] = i;
+            }
+            upper_bound_indices[args_len - 2] = args_len - 1;
+
+            return fmt.allocPrintZ(arena.allocator(),
+                \\WITH args AS (SELECT {})
+                \\SELECT rowid, {}
+                \\FROM "{s}_pendinginserts"
+                \\JOIN args a
+                \\WHERE ({}) {s} ({}) AND ({}) {s} ({})
+                \\ORDER BY {}, rowid
+            , .{
+                sql_fmt.ColumnListLenFormatter("? AS arg_{d}"){ .len = args_len },
+                sql_fmt.ColumnListLenFormatter("col_{d}"){ .len = self.columns_len },
+                self.vtab_table_name,
+                sql_fmt.ColumnListIndicesFormatter("col_{d}"){
+                    .indices = self.sort_key[0..(args_len - 1)],
+                },
+                if (between.lower_inc) ">=" else ">",
+                sql_fmt.ColumnListLenFormatter("a.arg_{d}"){ .len = args_len - 1 },
+                sql_fmt.ColumnListIndicesFormatter("col_{d}"){
+                    .indices = self.sort_key[0..(args_len - 1)],
+                },
+                if (between.upper_inc) "<=" else "<",
+                sql_fmt.ColumnListIndicesFormatter("a.arg_{d}"){ .indices = upper_bound_indices },
+                sql_fmt.ColumnListIndicesFormatter("col_{d}"){ .indices = self.sort_key },
+            });
+        },
+        else => |op| {
+            return fmt.allocPrintZ(arena.allocator(),
+                \\SELECT rowid, {}
+                \\FROM "{s}_pendinginserts"
+                \\WHERE ({}) {s} ({})
+                \\ORDER BY {}, rowid
+            , .{
+                sql_fmt.ColumnListLenFormatter("col_{d}"){ .len = self.columns_len },
+                self.vtab_table_name,
+                sql_fmt.ColumnListIndicesFormatter("col_{d}"){
+                    .indices = self.sort_key[0..args_len],
+                },
+                lastOpSymbol(op),
+                sql_fmt.ParameterListFormatter{ .len = args_len },
+                sql_fmt.ColumnListIndicesFormatter("col_{d}"){ .indices = self.sort_key },
+            });
+        },
+    }
 }
 
-fn lastOpSymbol(last_op: CursorRange.LastOp) []const u8 {
+fn lastOpSymbol(last_op: RangeOp) []const u8 {
     return switch (last_op) {
-        .lt => "<",
-        .le => "<=",
+        .to_exc => "<",
+        .to_inc => "<=",
         .eq => "=",
-        .gt => ">",
-        .ge => ">=",
+        .from_exc => ">",
+        .from_inc => ">=",
+        else => unreachable,
     };
 }
 

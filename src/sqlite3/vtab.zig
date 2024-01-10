@@ -106,6 +106,30 @@ pub const BestIndexInfo = struct {
         offset = c.SQLITE_INDEX_CONSTRAINT_OFFSET,
         function = @bitCast(@as(u8, c.SQLITE_INDEX_CONSTRAINT_FUNCTION)),
         _,
+
+        pub fn format(
+            self: Op,
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            const op_str = switch (self) {
+                .eq => "=",
+                .gt => ">",
+                .le => "<=",
+                .lt => "<",
+                .ge => ">=",
+                .ne => "!=",
+                .is_not => "IS NOT",
+                .is => "IS",
+                .is_not_null => "IS NOT NULL",
+                .is_null => "IS NULL",
+                .match => "MATCH",
+                .like => "LIKE",
+                else => "?",
+            };
+            try writer.print("{s}", .{op_str});
+        }
     };
 
     pub const Constraint = struct {
@@ -132,6 +156,15 @@ pub const BestIndexInfo = struct {
         pub fn setOmitTest(self: Constraint, omit: bool) void {
             var usage = &self.parent.?.*.aConstraintUsage[self.index];
             usage.omit = @intFromBool(omit);
+        }
+
+        pub fn format(
+            self: Constraint,
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            try writer.print("{} col {}", .{ self.op(), self.columnIndex() });
         }
     };
 

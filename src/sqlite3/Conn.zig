@@ -61,6 +61,10 @@ pub fn exec(self: Self, sql: [*:0]const u8) !void {
     }
 }
 
+pub fn lastInsertRowid(self: Self) i64 {
+    return @intCast(c.sqlite3_last_insert_rowid(self.conn));
+}
+
 pub fn lastErrMsg(self: Self) []const u8 {
     const err_msg = c.sqlite3_errmsg(self.conn);
     return mem.sliceTo(err_msg, 0);

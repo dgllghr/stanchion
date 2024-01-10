@@ -29,7 +29,7 @@ for test_name in $TESTS; do
         > "$testdir/results/$test_name.csv"
 
     # diff succeeds if the files are the same, fails if they are different
-    diff -b "$testdir/expected/$test_name.csv" "$testdir/results/$test_name.csv"
+    diff -b "$testdir/results/$test_name.csv" "$testdir/expected/$test_name.csv"
 
     echo "DONE"
     echo ""

@@ -101,8 +101,10 @@ zig build test --summary all
 
 ## Integration tests
 if [ $sqlite32bit -ne 0 ]; then
+    echo ">> Running with x86 sqlite"
     zig build itest --summary all -Dtarget=x86-linux
 else
+    echo ">> Running with x86_64 sqlite"
     zig build itest --summary all
 fi
 

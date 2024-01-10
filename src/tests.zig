@@ -6,5 +6,6 @@ test {
     _ = @import("segment.zig");
     _ = @import("PendingInserts.zig");
     _ = @import("row_group.zig");
+    _ = @import("index.zig");
     _ = @import("Table.zig");
 }

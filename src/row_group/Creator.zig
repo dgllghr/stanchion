@@ -248,13 +248,18 @@ fn merge(
         // it starts from the proper place for the next row group being created.
         if (idx < num_new_row_groups - 1) {
             const curr_sk = pend_inserts_cursor.sortKey(self.sort_key);
-            for (0..self.sort_key.len) |sk_idx| {
-                self.pend_inserts_sk_buf[sk_idx] = try MemoryValue.fromRef(
+            for (self.pend_inserts_sk_buf, 0..) |*sk_value, sk_idx| {
+                sk_value.* = try MemoryValue.fromRef(
                     tmp_arena.allocator(),
                     try curr_sk.readValue(sk_idx),
                 );
             }
-            const curr_rowid = try pend_inserts_cursor.readRowid();
+            const curr_rowid = (try pend_inserts_cursor.readRowid()).asI64();
+
+            std.log.debug(
+                "row group creator: checkpointing pending inserts cursor at {any} {}",
+                .{ self.pend_inserts_sk_buf, curr_rowid },
+            );
 
             pend_inserts_cursor.deinit();
 
@@ -262,7 +267,7 @@ fn merge(
                 try self.pending_inserts.cursorFrom(
                     tmp_arena,
                     MemoryTuple{ .values = self.pend_inserts_sk_buf },
-                    curr_rowid.asI64(),
+                    curr_rowid,
                 ),
                 pend_inserts_limit,
             );
