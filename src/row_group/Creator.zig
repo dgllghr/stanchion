@@ -506,7 +506,7 @@ fn planRow(self: *Self, row: anytype) !void {
 fn writeRow(self: *Self, rowid_continue: bool, row: anytype) !void {
     if (rowid_continue) {
         const rowid = try row.readRowid();
-        try self.rowid_segment_writer.write(rowid);
+        try self.rowid_segment_writer.write(rowid.asI64());
     }
     for (self.column_segment_writers, 0..) |*writer, idx| {
         if (self.writers_continue.isSet(idx)) {

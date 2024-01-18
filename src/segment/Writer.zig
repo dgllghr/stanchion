@@ -48,7 +48,7 @@ const BufferedBlobWriter = io.BufferedWriter(4096, Blob.BlobWriter(BlobSlice(Blo
 
 fn StripeWriter(comptime Encoder: type) type {
     return struct {
-        /// It is necessary to store this as a field because the `writer` field references it
+        /// It is necessary to store this as a field because the `buf_writer` field references it
         blob_writer: Blob.BlobWriter(BlobSlice(Blob)),
         /// References `blob_writer`
         buf_writer: BufferedBlobWriter,
@@ -125,32 +125,44 @@ pub fn begin(self: *Self) !bool {
 /// If an error is returned, the Writer can no longer be used and the segment must be destroyed
 /// TODO allow writing primitive types directly without being wrapped in an interface
 pub fn write(self: *Self, value: anytype) !void {
-    const value_type = value.valueType();
+    const Value = @TypeOf(value);
+    switch (@typeInfo(Value)) {
+        .Int => {
+            if (self.present) |*present| {
+                try present.encoder.write(present.writer(), true);
+            }
+            const primary = &self.primary.?;
+            try primary.encoder.int.write(primary.writer(), value);
+        },
+        else => {
+            const value_type = value.valueType();
 
-    if (value_type == .Null) {
-        try self.present.?.encoder.write(self.present.?.writer(), false);
-        return;
-    }
+            if (value_type == .Null) {
+                try self.present.?.encoder.write(self.present.?.writer(), false);
+                return;
+            }
 
-    if (self.present) |*present| {
-        try present.encoder.write(present.writer(), true);
-    }
+            if (self.present) |*present| {
+                try present.encoder.write(present.writer(), true);
+            }
 
-    if (self.primary) |*primary| {
-        switch (primary.encoder) {
-            .bool => |*e| try e.write(primary.writer(), value.asBool()),
-            .int => |*e| try e.write(primary.writer(), value.asI64()),
-            .float => |*e| try e.write(primary.writer(), value.asF64()),
-            .byte => |*byte_encoder| {
-                const bytes =
-                    if (value_type == .Text) value.asText() else value.asBlob();
-                var length = &self.length.?;
-                try length.encoder.write(length.writer(), @as(i64, @intCast(bytes.len)));
-                for (bytes) |b| {
-                    try byte_encoder.write(primary.writer(), b);
+            if (self.primary) |*primary| {
+                switch (primary.encoder) {
+                    .bool => |*e| try e.write(primary.writer(), value.asBool()),
+                    .int => |*e| try e.write(primary.writer(), value.asI64()),
+                    .float => |*e| try e.write(primary.writer(), value.asF64()),
+                    .byte => |*byte_encoder| {
+                        const bytes =
+                            if (value_type == .Text) value.asText() else value.asBlob();
+                        var length = &self.length.?;
+                        try length.encoder.write(length.writer(), @as(i64, @intCast(bytes.len)));
+                        for (bytes) |b| {
+                            try byte_encoder.write(primary.writer(), b);
+                        }
+                    },
                 }
-            },
-        }
+            }
+        },
     }
 }
 
