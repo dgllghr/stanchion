@@ -314,11 +314,13 @@ pub fn update(
     @panic("delete and update are not supported");
 }
 
+const BestIndexError = error{} || Allocator.Error || vtab.BestIndexError;
+
 pub fn bestIndex(
     self: *Self,
     cb_ctx: *vtab.CallbackContext,
     best_index_info: vtab.BestIndexInfo,
-) !void {
+) BestIndexError!void {
     try index.chooseBestIndex(cb_ctx.arena, self.schema.sort_key, best_index_info);
 }
 

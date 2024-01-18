@@ -2,14 +2,17 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator;
 
-const c = @import("./sqlite3/c.zig").c;
+const c = @import("sqlite3/c.zig").c;
 const sqlite = @import("sqlite3.zig");
 const sqlite_errors = sqlite.errors;
 const vtab = sqlite.vtab;
 const Conn = sqlite.Conn;
 
-const Table = @import("./Table.zig");
+const Table = @import("Table.zig");
 const StanchionVTab = vtab.VirtualTable(Table);
+
+const SegmentsFn = @import("functions/Segments.zig");
+const SegmentsTabValFn = vtab.VirtualTable(SegmentsFn);
 
 var allocator: GeneralPurposeAllocator(.{}) = undefined;
 
@@ -24,7 +27,7 @@ pub export fn sqlite3_stanchion_init(
     // with a struct containing the common data (see `ModuleContext` in `zig-sqlite`)
     allocator = GeneralPurposeAllocator(.{}){};
 
-    const res = c.sqlite3_create_module_v2(
+    var res = c.sqlite3_create_module_v2(
         db,
         "stanchion",
         &StanchionVTab.module,
@@ -32,7 +35,19 @@ pub export fn sqlite3_stanchion_init(
         null,
     );
     if (res != c.SQLITE_OK) {
-        err_msg.* = @constCast(@ptrCast("error creating module"));
+        err_msg.* = @constCast(@ptrCast("error creating stanchion module"));
+        return res;
+    }
+
+    res = c.sqlite3_create_module_v2(
+        db,
+        "stanchion_segments",
+        &SegmentsTabValFn.module,
+        &allocator,
+        null,
+    );
+    if (res != c.SQLITE_OK) {
+        err_msg.* = @constCast(@ptrCast("error creating stanchion_segments module"));
         return res;
     }
 
