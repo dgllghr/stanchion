@@ -1,3 +1,4 @@
+pub const Header = @import("segment/Header.zig");
 pub const Planner = @import("segment/Planner.zig");
 pub const Plan = Planner.Plan;
 pub const Reader = @import("segment/Reader.zig");

@@ -41,11 +41,12 @@ pub fn disconnect(_: *Self) void {}
 pub fn ddl(_: *Self, allocator: Allocator) ![:0]const u8 {
     return fmt.allocPrintZ(
         allocator,
-        \\CREATE TABLE stanchion_segments(
+        \\CREATE TABLE stanchion_segments (
         \\  row_group_index INTEGER NOT NULL,
         \\  column_rank INTEGER NOT NULL,
         \\  column_name TEXT NOT NULL,
         \\  segment_id INTEGER NULL,
+        \\
         \\  table_name TEXT HIDDEN
         \\)
     ,
@@ -121,6 +122,7 @@ pub const Cursor = struct {
         _: [:0]const u8,
         filter_args: vtab.FilterArgs,
     ) !void {
+        // TODO do not return an error if this is not text
         const table_name_ref = (try filter_args.readValue(0)).asText();
         self.table_name = try self.lifetime_arena.allocator()
             .dupe(u8, table_name_ref);
@@ -143,11 +145,6 @@ pub const Cursor = struct {
             };
             self.rg_index_cursor.readEntry(&self.rg_entry);
         }
-    }
-
-    fn readTableName(allocator: Allocator, filter_args: vtab.FilterArgs) ![]const u8 {
-        const table_name_ref = (try filter_args.readValue(0)).asText();
-        return allocator.dupe(u8, table_name_ref);
     }
 
     pub fn eof(self: *Cursor) bool {
@@ -199,7 +196,7 @@ pub const Cursor = struct {
             },
             // table_name
             4 => result.setText(self.table_name),
-            else => result.setNull(),
+            else => unreachable,
         }
     }
 };
