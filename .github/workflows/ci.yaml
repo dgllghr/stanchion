@@ -18,18 +18,18 @@ jobs:
       matrix:
         os: [ "ubuntu-latest", "macos-latest", "windows-latest" ]
         sqlite:
-          - version: 3.23.1
+          - version: 3.26.0
             year: 2018
-          - version: 3.29.0
+          - version: 3.30.1
             year: 2019
-          - version: 3.35.5
+          - version: 3.34.1
             year: 2021
           - version: 3.38.5
             year: 2022
-          - version: 3.41.2
+          - version: 3.42.0
             year: 2023
-          - version: 3.44.2
-            year: 2023
+          - version: 3.45.0
+            year: 2024
     runs-on: ${{ matrix.os }}
     env:
       SQLITE_VERSION: ${{ matrix.sqlite.version }}

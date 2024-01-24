@@ -2,7 +2,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator;
 
-const c = @import("sqlite3/c.zig").c;
+const c_mod = @import("sqlite3/c.zig");
+const c = c_mod.c;
+const encodeSqliteVersion = c_mod.encodeVersionNumber;
+const sqliteVersion = c_mod.versionNumber;
 const sqlite = @import("sqlite3.zig");
 const sqlite_errors = sqlite.errors;
 const vtab = sqlite.vtab;
@@ -18,12 +21,19 @@ const SegmentInfoTabValFn = vtab.VirtualTable(SegmentInfoFn);
 
 var allocator: GeneralPurposeAllocator(.{}) = undefined;
 
+const min_sqlite_version = encodeSqliteVersion(3, 26, 0);
+
 pub export fn sqlite3_stanchion_init(
     db: *c.sqlite3,
     err_msg: [*c][*c]u8,
     api: *c.sqlite3_api_routines,
 ) callconv(.C) c_int {
     c.sqlite3_api = api;
+
+    if (sqliteVersion() < min_sqlite_version) {
+        err_msg.* = @constCast(@ptrCast("stanchion requires sqlite version >= 3.26.0"));
+        return c.SQLITE_ERROR;
+    }
 
     // To store data common to all table instances (global to the module), replace this allocator
     // with a struct containing the common data (see `ModuleContext` in `zig-sqlite`)

@@ -4,8 +4,10 @@
 const std = @import("std");
 const mem = std.mem;
 
-const c = @import("c.zig").c;
-const versionGreaterThanOrEqualTo = @import("c.zig").versionGreaterThanOrEqualTo;
+const c_wrapper = @import("c.zig");
+const c = c_wrapper.c;
+const encodeVersionNumber = c_wrapper.encodeVersionNumber;
+const versionNumber = c_wrapper.versionNumber;
 
 pub const SQLiteExtendedIOError = error{
     SQLiteIOErrRead,
@@ -132,37 +134,21 @@ pub const Error = SQLiteError ||
     SQLiteExtendedConstraintError;
 
 pub fn errorFromResultCode(code: c_int) Error {
-    // These errors are only available since 3.22.0.
-    if (comptime versionGreaterThanOrEqualTo(3, 22, 0)) {
-        switch (code) {
-            c.SQLITE_ERROR_MISSING_COLLSEQ => return error.SQLiteErrorMissingCollSeq,
-            c.SQLITE_ERROR_RETRY => return error.SQLiteErrorRetry,
-            c.SQLITE_READONLY_CANTINIT => return error.SQLiteReadOnlyCantInit,
-            c.SQLITE_READONLY_DIRECTORY => return error.SQLiteReadOnlyDirectory,
-            else => {},
-        }
-    }
+    const sqlite_version = versionNumber();
 
-    // These errors are only available since 3.25.0.
-    if (comptime versionGreaterThanOrEqualTo(3, 25, 0)) {
-        switch (code) {
-            c.SQLITE_ERROR_SNAPSHOT => return error.SQLiteErrorSnapshot,
-            c.SQLITE_LOCKED_VTAB => return error.SQLiteLockedVTab,
-            c.SQLITE_CANTOPEN_DIRTYWAL => return error.SQLiteCantOpenDirtyWAL,
-            c.SQLITE_CORRUPT_SEQUENCE => return error.SQLiteCorruptSequence,
-            else => {},
-        }
-    }
     // These errors are only available since 3.31.0.
-    if (comptime versionGreaterThanOrEqualTo(3, 31, 0)) {
+    const version_3_31_0 = encodeVersionNumber(3, 31, 0);
+    if (sqlite_version >= version_3_31_0) {
         switch (code) {
             c.SQLITE_CANTOPEN_SYMLINK => return error.SQLiteCantOpenSymlink,
             c.SQLITE_CONSTRAINT_PINNED => return error.SQLiteConstraintPinned,
             else => {},
         }
     }
+
     // These errors are only available since 3.32.0.
-    if (comptime versionGreaterThanOrEqualTo(3, 32, 0)) {
+    const version_3_32_0 = encodeVersionNumber(3, 32, 0);
+    if (sqlite_version >= version_3_32_0) {
         switch (code) {
             c.SQLITE_IOERR_DATA => return error.SQLiteIOErrData, // See https://sqlite.org/cksumvfs.html
             c.SQLITE_BUSY_TIMEOUT => return error.SQLiteBusyTimeout,
@@ -170,8 +156,10 @@ pub fn errorFromResultCode(code: c_int) Error {
             else => {},
         }
     }
+
     // These errors are only available since 3.34.0.
-    if (comptime versionGreaterThanOrEqualTo(3, 34, 0)) {
+    const version_3_34_0 = encodeVersionNumber(3, 34, 0);
+    if (sqlite_version >= version_3_34_0) {
         switch (code) {
             c.SQLITE_IOERR_CORRUPTFS => return error.SQLiteIOErrCorruptFS,
             else => {},

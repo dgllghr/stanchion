@@ -10,15 +10,12 @@ else
         @cInclude("result-transient.h");
     });
 
-/// versionGreaterThanOrEqualTo returns true if the SQLite version is >= to the
-/// major.minor.patch provided.
-pub fn versionGreaterThanOrEqualTo(major: u8, minor: u8, patch: u8) bool {
-    return c.SQLITE_VERSION_NUMBER >=
-        @as(u32, major) * 1000000 + @as(u32, minor) * 1000 + @as(u32, patch);
+/// Returns the sqlite version encoded as a number
+pub fn versionNumber() u32 {
+    return @intCast(c.sqlite3_libversion_number());
 }
 
-comptime {
-    if (!versionGreaterThanOrEqualTo(3, 23, 1)) {
-        @compileError("must use SQLite >= 3.23.1");
-    }
+/// Generates a sqlite encoded version number as an integer from major.minor.patch
+pub fn encodeVersionNumber(major: u8, minor: u8, patch: u8) u32 {
+    return @as(u32, major) * 1000000 + @as(u32, minor) * 1000 + @as(u32, patch);
 }
