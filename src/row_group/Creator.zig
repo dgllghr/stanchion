@@ -295,7 +295,15 @@ fn merge(
         );
     }
 
-    // TODO delete the segments from the source row group
+    // Delete the segments from the source row group since they are no longer being used
+    if (self.src_row_group_cursor.row_group.record_count > 0) {
+        const src_rowid_segment_id = self.src_row_group_cursor.row_group.rowid_segment_id;
+        try self.blob_manager.delete(tmp_arena, src_rowid_segment_id);
+        const src_col_segemnt_ids = self.src_row_group_cursor.row_group.column_segment_ids;
+        for (src_col_segemnt_ids) |seg_id| {
+            try self.blob_manager.delete(tmp_arena, seg_id);
+        }
+    }
 
     // Delete the source row group entry
     try self.row_group_index.deleteEntry(

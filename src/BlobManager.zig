@@ -137,7 +137,7 @@ pub fn open(self: *Self, id: i64) !Handle {
     };
 }
 
-fn delete(self: *Self, tmp_arena: *ArenaAllocator, id: i64) !void {
+pub fn delete(self: *Self, tmp_arena: *ArenaAllocator, id: i64) !void {
     const stmt = try self.delete_stmt.acquire(tmp_arena, self);
     defer self.delete_stmt.release();
 
