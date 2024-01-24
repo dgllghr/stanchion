@@ -31,7 +31,7 @@ pub export fn sqlite3_stanchion_init(
     c.sqlite3_api = api;
 
     if (sqliteVersion() < min_sqlite_version) {
-        err_msg.* = @constCast(@ptrCast("stanchion requires sqlite version >= 3.26.0"));
+        setErrorMsg(err_msg, "stanchion requires sqlite version >= 3.26.0");
         return c.SQLITE_ERROR;
     }
 
@@ -47,7 +47,7 @@ pub export fn sqlite3_stanchion_init(
         null,
     );
     if (res != c.SQLITE_OK) {
-        err_msg.* = @constCast(@ptrCast("error creating stanchion module"));
+        setErrorMsg(err_msg, "error creating stanchion module");
         return res;
     }
 
@@ -59,7 +59,7 @@ pub export fn sqlite3_stanchion_init(
         null,
     );
     if (res != c.SQLITE_OK) {
-        err_msg.* = @constCast(@ptrCast("error creating stanchion_segments module"));
+        setErrorMsg(err_msg, "error creating stanchion_segments module");
         return res;
     }
 
@@ -71,9 +71,15 @@ pub export fn sqlite3_stanchion_init(
         null,
     );
     if (res != c.SQLITE_OK) {
-        err_msg.* = @constCast(@ptrCast("error creating stanchion_segments module"));
+        setErrorMsg(err_msg, "error creating stanchion_segment_info module");
         return res;
     }
 
     return c.SQLITE_OK;
+}
+
+fn setErrorMsg(err_msg: [*c][*c]u8, msg_text: []const u8) void {
+    const msg_buf: [*c]u8 = @ptrCast(c.sqlite3_malloc(@intCast(msg_text.len)));
+    @memcpy(msg_buf[0..msg_text.len], msg_text);
+    err_msg.* = msg_buf;
 }
