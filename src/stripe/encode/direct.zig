@@ -96,14 +96,16 @@ pub fn Decoder(
                 return;
             }
 
-            // TODO more testing needed
             var bytes_dest: []u8 = undefined;
             bytes_dest.len = dst.len * @sizeOf(Value);
             bytes_dest.ptr = @ptrCast(dst.ptr);
             try blob.readAt(bytes_dest[0..], self.index * @sizeOf(Value));
             for (dst, 0..) |*v, idx| {
                 const start = idx * @sizeOf(Value);
-                v.* = fromBytes(@as(*const [@sizeOf(Value)]u8, @ptrCast(bytes_dest[start..(start + @sizeOf(Value))])));
+                v.* = fromBytes(@as(
+                    *const [@sizeOf(Value)]u8,
+                    @ptrCast(bytes_dest[start..(start + @sizeOf(Value))]),
+                ));
             }
         }
     };

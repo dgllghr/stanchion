@@ -6,17 +6,20 @@ const Optimizer = @import("../optimizer.zig").Optimizer;
 
 const constant = @import("../encode/constant.zig");
 const direct = @import("../encode/direct.zig");
+const bit_packed = @import("../encode/bit_packed_int.zig");
 
 const Int = @This();
 
 const Tag = enum {
     constant,
     direct,
+    bit_packed,
 };
 
 pub const Validator = Optimizer(struct {
     constant: constant.Validator(i64, writeDirect),
     direct: direct.Validator(i64, writeDirect),
+    bit_packed: bit_packed.Validator,
 }, Encoder);
 
 pub const Encoder = union(Tag) {
@@ -24,6 +27,7 @@ pub const Encoder = union(Tag) {
 
     constant: constant.Encoder(i64, writeDirect),
     direct: direct.Encoder(i64, writeDirect),
+    bit_packed: bit_packed.Encoder,
 
     pub const Value = i64;
 
@@ -57,6 +61,7 @@ pub const Decoder = union(Tag) {
 
     constant: constant.Decoder(i64, readDirect),
     direct: direct.Decoder(i64, readDirect),
+    bit_packed: bit_packed.Decoder,
 
     pub fn init(encoding: Encoding) !Self {
         return switch (encoding) {
@@ -65,6 +70,9 @@ pub const Decoder = union(Tag) {
             },
             .Direct => .{
                 .direct = direct.Decoder(i64, readDirect).init(),
+            },
+            .BitPacked => .{
+                .bit_packed = bit_packed.Decoder.init(),
             },
             else => return Error.InvalidEncoding,
         };

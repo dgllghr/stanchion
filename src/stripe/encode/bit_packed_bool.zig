@@ -15,10 +15,9 @@ comptime {
 }
 
 pub const Validator = struct {
-    const Self = @This();
-
     count: u32,
 
+    const Self = @This();
     pub const Encoder = bit_packed_bool.Encoder;
 
     pub fn init() Self {
@@ -43,13 +42,11 @@ pub const Validator = struct {
 };
 
 pub const Encoder = struct {
-    const Self = @This();
-
-    const BitIndexInt = u6;
-
     word: Word,
     bit_index: BitIndexInt,
 
+    const Self = @This();
+    const BitIndexInt = u6;
     const Value = bool;
 
     fn init() Self {
@@ -83,10 +80,10 @@ pub const Encoder = struct {
 };
 
 pub const Decoder = struct {
-    const Self = @This();
-
     index: usize,
     current_word: ?Word,
+
+    const Self = @This();
 
     pub fn init() Self {
         return .{
@@ -116,10 +113,6 @@ pub const Decoder = struct {
 
         const bit_index: u5 = @intCast(self.index % @bitSizeOf(Word));
         return (self.current_word.? >> bit_index) & 1 > 0;
-    }
-
-    pub fn readAll(_: *Self, _: []bool, _: anytype) !void {
-        @panic("todo");
     }
 
     fn loadWord(self: *Self, blob: anytype, word_index: usize) !void {
