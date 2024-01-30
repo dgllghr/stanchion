@@ -16,8 +16,10 @@ Stanchion is an ideal fit for analytical queries and wide tables because it only
 
 ## Example
 
+Download the prebuilt dynamic library for your platform or [build from source](#Build).
+
 ```sql
-.load ./stanchion
+.load /path/to/libstanchion
 
 CREATE VIRTUAL TABLE dnd_monsters
 USING stanchion (
@@ -57,8 +59,6 @@ zig build ext -Doptimize=ReleaseFast
 ```
 
 The SQLite extension is the dynamic library named `libstanchion` in the `zig-out` directory.
-
-Building from source is currently the only way to use stanchion.
 
 ## Usage
 
@@ -144,7 +144,7 @@ In Stanchion, the order of the records in the table (aka the clustered index) is
 
 This differs from SQLite where tables are sorted by the `ROWID` by default or by the `PRIMARY KEY` if the table is a `WITHOUT ROWID` table.
 
-### No uniqueness (`UNIQUE` or `PRIMARY KEY`) or foreign key constraints 
+### No uniqueness (`UNIQUE` or `PRIMARY KEY`) or foreign key constraints
 
 This may change in the future. Implementing these will likely require external indexes. When/if a `PRIMARY KEY` is introduced, it will likley make sense to follow the lead of Clickhouse's `MergeTree` engine and require that the `PRIMARY KEY` [must be a prefix](https://clickhouse.com/docs/en/engines/table-engines/mergetree-family/mergetree#choosing-a-primary-key-that-differs-from-the-sorting-key) of the `SORT KEY`.
 
@@ -185,4 +185,3 @@ When a query filters on sort key columns, Stanchion applies that filter to the p
 ### Row group index
 
 The row group index is a native, row-oriented SQLite table that indexes the row groups by the starting (min) sort key of each row group. When a query filters on sort key columns, Stanchion applies that filter to the primary index to restrict which row groups are accessed. Filtering by sort key is the only indexing mechanism currently supported by Stanchion.
-
