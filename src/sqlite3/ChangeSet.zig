@@ -18,7 +18,7 @@ pub fn init(values: []?*c.sqlite3_value) Self {
 }
 
 pub fn changeType(self: Self) ChangeType {
-    if (self.values.len == 0) {
+    if (self.values.len == 1) {
         return .Delete;
     }
     if ((ValueRef{ .value = self.values[0] }).isNull()) {

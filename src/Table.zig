@@ -47,6 +47,8 @@ pending_inserts: PendingInserts,
 row_group_creator: RowGroupCreator,
 dirty: bool,
 
+warned_update_delete_not_supported: bool = false,
+
 pub const InitError = error{
     NoColumns,
     UnsupportedDb,
@@ -300,7 +302,8 @@ pub fn update(
     rowid: *i64,
     change_set: ChangeSet,
 ) !void {
-    if (change_set.changeType() == .Insert) {
+    const change_type = change_set.changeType();
+    if (change_type == .Insert) {
         rowid.* = self.pending_inserts.insert(cb_ctx.arena, change_set) catch |e| {
             cb_ctx.setErrorMessage("failed insert insert entry: {any}", .{e});
             return e;
@@ -311,7 +314,10 @@ pub fn update(
         return;
     }
 
-    @panic("delete and update are not supported");
+    if (!self.warned_update_delete_not_supported) {
+        std.log.warn("stanchion tables do not (yet) support UPDATE or DELETE", .{});
+        self.warned_update_delete_not_supported = true;
+    }
 }
 
 const BestIndexError = error{} || Allocator.Error || vtab.BestIndexError;
