@@ -85,7 +85,7 @@ CREATE VIRTUAL TABLE sensor_log USING stanchion (
 
 The `USING stanchion` phrase tells SQLite to create `sensor_log` as a virtual table that is implemented by stanchion.
 
-The `SORT KEY` is required for all stanchion tables. It defines the clustered index, the order of the records in the table. The `SORT KEY` does not enforce uniqueness.
+The `SORT KEY` is required for all stanchion tables. It defines the clustered index, the order of the records in the table. The `SORT KEY` does not enforce uniqueness. Currently, the `SORT KEY` can only contain columns not expressions.
 
 Stanchion tables do not support foreign keys, primary keys, check, or unique constraints. These constraints are generally less useful in the scenarios that column-oriented tables are more useful and they are not widely supported across column-oriented databases. However, some of or all of these constraints may be introduced to stanchion in the future as options.
 
@@ -140,7 +140,7 @@ SQLite uses `INTEGER` to represent booleans. Stanchion converts `BOOLEAN` values
 
 ### Clustered index by `SORT KEY`
 
-In Stanchion, the order of the records in the table (aka the clustered index) is controlled by the `SORT KEY`. Currently, every table in stanchion must have an explicit `SORT KEY` made up of 1 or more columns. It is declared when the table is created and cannot be changed. Unlike a `PRIMARY KEY`, it does not enforce uniqueness.
+In Stanchion, the order of the records in the table (aka the clustered index) is controlled by the `SORT KEY`. Currently, every table in stanchion must have an explicit `SORT KEY` made up of 1 or more columns (currently expresions are not supported). It is declared when the table is created and cannot be changed. Unlike a `PRIMARY KEY`, it does not enforce uniqueness.
 
 This differs from SQLite where tables are sorted by the `ROWID` by default or by the `PRIMARY KEY` if the table is a `WITHOUT ROWID` table.
 
