@@ -164,6 +164,23 @@ Support for `UPDATE` and `DELETE` will be added to stanchion in the future.
 
 This is something that stanchion would like to support, but it may be difficult because SQLite does not have a documented way of supporting schema changes to virtual tables. This is still being investigaed.
 
+## TODO
+
+A high level roadmap (only roughly ordered) of upcoming features:
+
+- [ ] Table renaming
+- [ ] Optimize table
+- [ ] Concurrency safety and testing
+- [ ] More encodings: RLE, Dictionary, Chimp, etc.
+- [ ] Byte level lossless compression (e.g. zstd)
+- [ ] Function that converts SQLite native table to stanchion table
+- [ ] `DELETE` & `UPDATE`
+- [ ] Configuration parameters and tuning
+- [ ] Publish benchmarks against SQLite, DuckDB, and chDB
+- [ ] Guide for using stanchion within iOS and Android apps
+- [ ] Schema changes (not natively support by SQLite virtual tables)
+- [ ] List data type
+
 ## Data Storage Internals
 
 ### Row groups, segments, and stripes
