@@ -16,7 +16,7 @@ Stanchion is an ideal fit for analytical queries and wide tables because it only
 
 ## Example
 
-Download the prebuilt dynamic library for your platform or [build from source](#Build).
+Download the prebuilt dynamic library for your platform from a Release or [build from source](#Build).
 
 ```sql
 .load /path/to/libstanchion
@@ -168,15 +168,15 @@ This is something that stanchion would like to support, but it may be difficult 
 
 A high level roadmap (only roughly ordered) of upcoming features:
 
-- [ ] Table renaming
+- [ ] Rename table
 - [ ] Optimize table
 - [ ] Concurrency safety and testing
 - [ ] More encodings: RLE, Dictionary, Chimp, etc.
 - [ ] Byte level lossless compression (e.g. zstd)
 - [ ] Function that converts SQLite native table to stanchion table
+- [ ] Publish benchmarks against SQLite, DuckDB, and chDB
 - [ ] `DELETE` & `UPDATE`
 - [ ] Configuration parameters and tuning
-- [ ] Publish benchmarks against SQLite, DuckDB, and chDB
 - [ ] Guide for using stanchion within iOS and Android apps
 - [ ] Schema changes (not natively support by SQLite virtual tables)
 - [ ] List data type
@@ -202,3 +202,7 @@ When a query filters on sort key columns, Stanchion applies that filter to the p
 ### Row group index
 
 The row group index is a native, row-oriented SQLite table that indexes the row groups by the starting (min) sort key of each row group. When a query filters on sort key columns, Stanchion applies that filter to the primary index to restrict which row groups are accessed. Filtering by sort key is the only indexing mechanism currently supported by Stanchion.
+
+## Contributing
+
+See [CONTRIBUTING.md](.github/CONTRIBUTING.md)
