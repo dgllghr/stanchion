@@ -11,6 +11,7 @@ There are a number of situations where column-oriented storage outperforms row-o
 * Timeseries data storage and analysis
 * Analytical queries over many rows and a few columns (e.g. calculating the average temperature over months of hourly weather data)
 * Change tracking, history/temporal tables
+* Anchor modeling / Datomic-like data models
 
 Stanchion is an ideal fit for analytical queries and wide tables because it only scans data from the columns that are referenced by a given query. It uses compression techniques like run length and bit-packed encodings that significantly reduce the size of stored data, greatly reducing the cost of large data sets. This makes it an ideal solution for storing large, expanding datasets.
 
