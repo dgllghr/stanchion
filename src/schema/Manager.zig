@@ -26,11 +26,10 @@ const Self = @This();
 
 const StmtCell = prep_stmt.Cell(VtabCtxSchemaless);
 
-pub const Error = error{ SortKeyColumnNotFound, ExecReturnedData };
+pub const Error = error{ SortKeyColumnNotFound, ExecReturnedData, ShadowTableDoesNotExist };
 
-pub fn init(tmp_arena: *ArenaAllocator, ctx: *const VtabCtxSchemaless) !Self {
-    try setup(tmp_arena, ctx.*);
-
+pub fn create(tmp_arena: *ArenaAllocator, ctx: *const VtabCtxSchemaless) !Self {
+    try createTable(tmp_arena, ctx.*);
     return .{
         .ctx = ctx,
         .load_columns = StmtCell.init(&loadColumnsQuery),
@@ -38,9 +37,9 @@ pub fn init(tmp_arena: *ArenaAllocator, ctx: *const VtabCtxSchemaless) !Self {
     };
 }
 
-fn setup(tmp_arena: *ArenaAllocator, ctx: VtabCtxSchemaless) !void {
+fn createTable(tmp_arena: *ArenaAllocator, ctx: VtabCtxSchemaless) !void {
     const query = try fmt.allocPrintZ(tmp_arena.allocator(),
-        \\CREATE TABLE IF NOT EXISTS "{s}_columns" (
+        \\CREATE TABLE "{s}_columns" (
         \\  rank INTEGER NOT NULL,
         \\  name TEXT NOT NULL COLLATE NOCASE,
         \\  column_type TEXT NOT NULL,
@@ -52,9 +51,33 @@ fn setup(tmp_arena: *ArenaAllocator, ctx: VtabCtxSchemaless) !void {
     try ctx.conn().exec(query);
 }
 
+pub fn open(tmp_arena: *ArenaAllocator, ctx: *const VtabCtxSchemaless) !Self {
+    try verifyExists(ctx.*, tmp_arena);
+    return .{
+        .ctx = ctx,
+        .load_columns = StmtCell.init(&loadColumnsQuery),
+        .create_column = StmtCell.init(&createColumnDml),
+    };
+}
+
 pub fn deinit(self: *Self) void {
     self.load_columns.deinit();
     self.create_column.deinit();
+}
+
+pub fn verifyExists(ctx: VtabCtxSchemaless, tmp_arena: *ArenaAllocator) !void {
+    const query = try fmt.allocPrintZ(tmp_arena.allocator(),
+        \\SELECT 1
+        \\FROM sqlite_master
+        \\WHERE type = 'table' AND name = '{s}_columns'
+    , .{ctx.vtabName()});
+
+    const stmt = try ctx.conn().prepare(query);
+
+    const exists = try stmt.next();
+    if (!exists) {
+        return Error.ShadowTableDoesNotExist;
+    }
 }
 
 pub fn destroy(self: *Self, tmp_arena: *ArenaAllocator) !void {
@@ -113,7 +136,7 @@ fn readColumn(allocator: Allocator, stmt: Stmt) !Column {
     };
 }
 
-pub fn create(
+pub fn createSchema(
     self: *Self,
     table_static_arena: *ArenaAllocator,
     tmp_arena: *ArenaAllocator,
@@ -212,7 +235,7 @@ test "schema: create and read columns" {
         .conn_ = conn,
         .vtab_name = "test",
     };
-    var mgr = try Self.init(&arena, &ctx);
+    var mgr = try Self.create(&arena, &ctx);
     inline for (&columns) |*col| {
         try mgr.createColumn(&arena, col);
     }

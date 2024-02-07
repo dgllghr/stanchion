@@ -96,10 +96,14 @@ pub fn create(
     const name = try self.table_static_arena.allocator().dupe(u8, args[2]);
     self.ctx.base = VtabCtxSchemaless.init(conn, name);
 
-    var schema_mgr = try SchemaManager.init(cb_ctx.arena, &self.ctx.base);
+    var schema_mgr = try SchemaManager.create(cb_ctx.arena, &self.ctx.base);
     defer schema_mgr.deinit();
 
-    self.ctx.schema = schema_mgr.create(&self.table_static_arena, cb_ctx.arena, &def) catch |e| {
+    self.ctx.schema = schema_mgr.createSchema(
+        &self.table_static_arena,
+        cb_ctx.arena,
+        &def,
+    ) catch |e| {
         cb_ctx.setErrorMessage("error creating schema: {any}", .{e});
         return e;
     };
@@ -203,7 +207,7 @@ pub fn connect(
     const name = try self.table_static_arena.allocator().dupe(u8, args[2]);
     self.ctx.base = VtabCtxSchemaless.init(conn, name);
 
-    var schema_mgr = try SchemaManager.init(cb_ctx.arena, &self.ctx.base);
+    var schema_mgr = try SchemaManager.open(cb_ctx.arena, &self.ctx.base);
     defer schema_mgr.deinit();
 
     self.ctx.schema = schema_mgr.load(&self.table_static_arena, cb_ctx.arena) catch |e| {

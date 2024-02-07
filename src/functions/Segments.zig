@@ -93,6 +93,7 @@ pub const Cursor = struct {
 
     rg_idx: i64,
     col_idx: i64,
+    begun: bool,
 
     pub fn init(allocator: Allocator, conn: Conn) Cursor {
         return .{
@@ -106,12 +107,15 @@ pub const Cursor = struct {
 
             .rg_idx = 0,
             .col_idx = -1,
+            .begun = false,
         };
     }
 
     pub fn deinit(self: *Cursor) void {
-        self.rg_index_cursor.deinit();
-        self.rg_index.deinit();
+        if (self.begun) {
+            self.rg_index_cursor.deinit();
+            self.rg_index.deinit();
+        }
         self.lifetime_arena.deinit();
     }
 
@@ -127,7 +131,14 @@ pub const Cursor = struct {
         self.vtab_ctx.base.vtab_name = try self.lifetime_arena.allocator()
             .dupe(u8, table_name_ref);
 
-        var schema_manager = try SchemaManager.init(cb_ctx.arena, &self.vtab_ctx.base);
+        // Match SQLite behavior of `PRAGMA table_info()` and return empty set when the table does
+        // not exist
+        var schema_manager = SchemaManager.open(cb_ctx.arena, &self.vtab_ctx.base) catch |e| {
+            if (e == SchemaManager.Error.ShadowTableDoesNotExist) {
+                return;
+            }
+            return e;
+        };
         defer schema_manager.deinit();
         self.vtab_ctx.schema = try schema_manager.load(&self.lifetime_arena, cb_ctx.arena);
 
@@ -145,10 +156,13 @@ pub const Cursor = struct {
             };
             self.rg_index_cursor.readEntry(&self.rg_entry);
         }
+
+        self.begun = true;
     }
 
     pub fn eof(self: *Cursor) bool {
-        return self.rg_index_cursor.eof();
+        // `begun` is false if the table does not exist and `begin` exited early
+        return !self.begun or self.rg_index_cursor.eof();
     }
 
     pub fn next(self: *Cursor) !void {

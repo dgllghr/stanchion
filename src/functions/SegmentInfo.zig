@@ -159,12 +159,20 @@ pub const Cursor = struct {
         try stmt.bind(.Int64, 2, segment_id);
         const exists = try stmt.next();
         if (!exists) {
+            // Ensures that the cursor is eof
+            self.index = 3;
             return;
         }
         const col_rank = stmt.read(.Int64, false, 0);
 
-        // TODO this unnecessarily loads all columns and stores them for the duration of the cursor
-        var schema_manager = try SchemaManager.init(cb_ctx.arena, &self.vtab_ctx);
+        // Match SQLite behavior of `PRAGMA table_info()` and return empty set when the table does
+        // not exist
+        var schema_manager = SchemaManager.open(cb_ctx.arena, &self.vtab_ctx) catch |e| {
+            if (e == SchemaManager.Error.ShadowTableDoesNotExist) {
+                return;
+            }
+            return e;
+        };
         defer schema_manager.deinit();
         const schema = try schema_manager.load(&self.lifetime_arena, cb_ctx.arena);
         if (col_rank == -1) {
