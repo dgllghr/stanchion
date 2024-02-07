@@ -13,6 +13,8 @@ const BestIndexError = vtab.BestIndexError;
 const BestIndexInfo = vtab.BestIndexInfo;
 const Result = vtab.Result;
 
+const VtabCtx = @import("../ctx.zig").VtabCtx;
+
 const schema_mod = @import("../schema.zig");
 const Schema = schema_mod.Schema;
 const SchemaManager = schema_mod.Manager;
@@ -82,10 +84,9 @@ pub fn open(
 
 pub const Cursor = struct {
     lifetime_arena: ArenaAllocator,
-    conn: Conn,
 
-    table_name: []const u8,
-    schema: Schema,
+    vtab_ctx: VtabCtx,
+
     rg_index: RowGroupIndex,
     rg_index_cursor: RowGroupIndex.EntriesCursor,
     rg_entry: RowGroupIndex.Entry,
@@ -96,10 +97,9 @@ pub const Cursor = struct {
     pub fn init(allocator: Allocator, conn: Conn) Cursor {
         return .{
             .lifetime_arena = ArenaAllocator.init(allocator),
-            .conn = conn,
 
-            .table_name = undefined,
-            .schema = undefined,
+            .vtab_ctx = VtabCtx.init(conn, undefined, undefined),
+
             .rg_index = undefined,
             .rg_index_cursor = undefined,
             .rg_entry = undefined,
@@ -124,14 +124,14 @@ pub const Cursor = struct {
     ) !void {
         // TODO do not return an error if this is not text
         const table_name_ref = (try filter_args.readValue(0)).asText();
-        self.table_name = try self.lifetime_arena.allocator()
+        self.vtab_ctx.base.vtab_name = try self.lifetime_arena.allocator()
             .dupe(u8, table_name_ref);
 
-        var schema_manager = try SchemaManager.init(cb_ctx.arena, self.conn, self.table_name);
+        var schema_manager = try SchemaManager.init(cb_ctx.arena, &self.vtab_ctx.base);
         defer schema_manager.deinit();
-        self.schema = try schema_manager.load(&self.lifetime_arena, cb_ctx.arena);
+        self.vtab_ctx.schema = try schema_manager.load(&self.lifetime_arena, cb_ctx.arena);
 
-        self.rg_index = RowGroupIndex.open(self.conn, self.table_name, &self.schema);
+        self.rg_index = RowGroupIndex.open(&self.vtab_ctx);
         errdefer self.rg_index.deinit();
         self.rg_index_cursor = try self.rg_index.cursor(cb_ctx.arena);
         errdefer self.rg_index_cursor.deinit();
@@ -140,7 +140,7 @@ pub const Cursor = struct {
             self.rg_entry = .{
                 .rowid_segment_id = 0,
                 .column_segment_ids = try self.lifetime_arena.allocator()
-                    .alloc(i64, self.schema.columns.len),
+                    .alloc(i64, self.vtab_ctx.columns().len),
                 .record_count = 0,
             };
             self.rg_index_cursor.readEntry(&self.rg_entry);
@@ -154,7 +154,7 @@ pub const Cursor = struct {
     pub fn next(self: *Cursor) !void {
         self.col_idx += 1;
 
-        if (self.col_idx >= self.schema.columns.len) {
+        if (self.col_idx >= self.vtab_ctx.columns().len) {
             try self.rg_index_cursor.next();
             if (!self.rg_index_cursor.eof()) {
                 self.rg_index_cursor.readEntry(&self.rg_entry);
@@ -165,7 +165,7 @@ pub const Cursor = struct {
     }
 
     pub fn rowid(self: *Cursor) !i64 {
-        const cols_len: i64 = @intCast(self.schema.columns.len);
+        const cols_len: i64 = @intCast(self.vtab_ctx.columns().len);
         return (self.rg_idx * (cols_len + 1)) + self.col_idx + 2;
     }
 
@@ -181,7 +181,7 @@ pub const Cursor = struct {
                     result.setText("rowid");
                     return;
                 }
-                const col_name = self.schema.columns[@intCast(self.col_idx)].name;
+                const col_name = self.vtab_ctx.columns()[@intCast(self.col_idx)].name;
                 result.setText(col_name);
             },
             // segment_id
@@ -195,7 +195,7 @@ pub const Cursor = struct {
                 result.setI64(seg_id);
             },
             // table_name
-            4 => result.setText(self.table_name),
+            4 => result.setText(self.vtab_ctx.vtabName()),
             else => unreachable,
         }
     }

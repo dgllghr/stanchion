@@ -9,6 +9,7 @@ const sqlite = @import("../sqlite3.zig");
 const Conn = sqlite.Conn;
 const Stmt = sqlite.Stmt;
 
+const VtabCtxSchemaless = @import("../ctx.zig").VtabCtxSchemaless;
 const prep_stmt = @import("../prepared_stmt.zig");
 
 const Column = @import("Column.zig");
@@ -16,29 +17,28 @@ const ColumnType = @import("ColumnType.zig");
 const Schema = @import("Schema.zig");
 const SchemaDef = @import("SchemaDef.zig");
 
-conn: Conn,
-vtab_table_name: []const u8,
+ctx: *const VtabCtxSchemaless,
+
 load_columns: StmtCell,
 create_column: StmtCell,
 
 const Self = @This();
 
-const StmtCell = prep_stmt.Cell(Self);
+const StmtCell = prep_stmt.Cell(VtabCtxSchemaless);
 
 pub const Error = error{ SortKeyColumnNotFound, ExecReturnedData };
 
-pub fn init(tmp_arena: *ArenaAllocator, conn: Conn, vtab_table_name: []const u8) !Self {
-    try setup(tmp_arena, conn, vtab_table_name);
+pub fn init(tmp_arena: *ArenaAllocator, ctx: *const VtabCtxSchemaless) !Self {
+    try setup(tmp_arena, ctx.*);
 
     return .{
-        .conn = conn,
-        .vtab_table_name = vtab_table_name,
+        .ctx = ctx,
         .load_columns = StmtCell.init(&loadColumnsQuery),
         .create_column = StmtCell.init(&createColumnDml),
     };
 }
 
-fn setup(tmp_arena: *ArenaAllocator, conn: Conn, vtab_table_name: []const u8) !void {
+fn setup(tmp_arena: *ArenaAllocator, ctx: VtabCtxSchemaless) !void {
     const query = try fmt.allocPrintZ(tmp_arena.allocator(),
         \\CREATE TABLE IF NOT EXISTS "{s}_columns" (
         \\  rank INTEGER NOT NULL,
@@ -48,8 +48,8 @@ fn setup(tmp_arena: *ArenaAllocator, conn: Conn, vtab_table_name: []const u8) !v
         \\  PRIMARY KEY (rank),
         \\  UNIQUE (name)
         \\) WITHOUT ROWID
-    , .{vtab_table_name});
-    try conn.exec(query);
+    , .{ctx.vtabName()});
+    try ctx.conn().exec(query);
 }
 
 pub fn deinit(self: *Self) void {
@@ -60,12 +60,12 @@ pub fn deinit(self: *Self) void {
 pub fn destroy(self: *Self, tmp_arena: *ArenaAllocator) !void {
     const query = try fmt.allocPrintZ(tmp_arena.allocator(),
         \\DROP TABLE "{s}_columns"
-    , .{self.vtab_table_name});
-    try self.conn.exec(query);
+    , .{self.ctx.vtabName()});
+    try self.ctx.conn.exec(query);
 }
 
 pub fn load(self: *Self, table_static_arena: *ArenaAllocator, tmp_arena: *ArenaAllocator) !Schema {
-    const stmt = try self.load_columns.acquire(tmp_arena, self);
+    const stmt = try self.load_columns.acquire(tmp_arena, self.ctx.*);
     defer self.load_columns.release();
 
     var columns = ArrayList(Column).init(tmp_arena.allocator());
@@ -92,12 +92,12 @@ pub fn load(self: *Self, table_static_arena: *ArenaAllocator, tmp_arena: *ArenaA
     };
 }
 
-fn loadColumnsQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+fn loadColumnsQuery(ctx: VtabCtxSchemaless, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
         \\SELECT rank, name, column_type, sk_rank
         \\FROM "{s}_columns"
         \\ORDER BY rank
-    , .{self.vtab_table_name});
+    , .{ctx.vtabName()});
 }
 
 fn readColumn(allocator: Allocator, stmt: Stmt) !Column {
@@ -161,7 +161,7 @@ pub fn create(
 }
 
 pub fn createColumn(self: *Self, tmp_arena: *ArenaAllocator, column: *const Column) !void {
-    const stmt = try self.create_column.acquire(tmp_arena, self);
+    const stmt = try self.create_column.acquire(tmp_arena, self.ctx.*);
     defer self.create_column.release();
 
     try stmt.bind(.Int32, 1, column.rank);
@@ -173,12 +173,12 @@ pub fn createColumn(self: *Self, tmp_arena: *ArenaAllocator, column: *const Colu
     try stmt.exec();
 }
 
-fn createColumnDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+fn createColumnDml(ctx: VtabCtxSchemaless, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
         \\INSERT INTO "{s}_columns" (
         \\  rank, name, column_type, sk_rank)
         \\VALUES (?, ?, ?, ?)
-    , .{self.vtab_table_name});
+    , .{ctx.vtabName()});
 }
 
 test "schema: create and read columns" {
@@ -208,7 +208,11 @@ test "schema: create and read columns" {
         },
     };
 
-    var mgr = try Self.init(&arena, conn, "test");
+    const ctx = VtabCtxSchemaless{
+        .conn_ = conn,
+        .vtab_name = "test",
+    };
+    var mgr = try Self.init(&arena, &ctx);
     inline for (&columns) |*col| {
         try mgr.createColumn(&arena, col);
     }

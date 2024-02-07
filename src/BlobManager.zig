@@ -7,49 +7,52 @@ const sqlite = @import("sqlite3.zig");
 const Blob = sqlite.Blob;
 const Conn = sqlite.Conn;
 
+const VtabCtxSchemaless = @import("ctx.zig").VtabCtxSchemaless;
 const prep_stmt = @import("prepared_stmt.zig");
 
-conn: Conn,
+ctx: *const VtabCtxSchemaless,
+
+/// The full name of the shadow table so it can be passed to `Blob.open` without allocating
 table_name: [:0]const u8,
+
 insert_stmt: StmtCell,
 delete_stmt: StmtCell,
 
 const Self = @This();
 
-const StmtCell = prep_stmt.Cell(Self);
+const StmtCell = prep_stmt.Cell(VtabCtxSchemaless);
 
 const blob_column_name = "blob";
 
 pub fn init(
     lifetime_arena: *ArenaAllocator,
     tmp_arena: *ArenaAllocator,
-    conn: Conn,
-    vtab_table_name: []const u8,
+    ctx: *const VtabCtxSchemaless,
 ) !Self {
-    try setup(tmp_arena, conn, vtab_table_name);
+    try setup(tmp_arena, ctx.*);
 
     const table_name = try fmt.allocPrintZ(
         lifetime_arena.allocator(),
         "{s}_blobs",
-        .{vtab_table_name},
+        .{ctx.vtabName()},
     );
 
     return .{
-        .conn = conn,
+        .ctx = ctx,
         .table_name = table_name,
         .insert_stmt = StmtCell.init(&insertDml),
         .delete_stmt = StmtCell.init(&deleteDml),
     };
 }
 
-fn setup(tmp_arena: *ArenaAllocator, conn: Conn, vtab_table_name: []const u8) !void {
+fn setup(tmp_arena: *ArenaAllocator, ctx: VtabCtxSchemaless) !void {
     const query = try fmt.allocPrintZ(tmp_arena.allocator(),
         \\CREATE TABLE IF NOT EXISTS "{s}_blobs" (
         \\  id INTEGER NOT NULL PRIMARY KEY,
         \\  blob BLOB NOT NULL
         \\)
-    , .{vtab_table_name});
-    try conn.exec(query);
+    , .{ctx.vtabName()});
+    try ctx.conn().exec(query);
 }
 
 pub fn deinit(self: *Self) void {
@@ -60,11 +63,11 @@ pub fn deinit(self: *Self) void {
 pub fn destroy(self: *Self, tmp_arena: *ArenaAllocator) !void {
     const query = try fmt.allocPrintZ(
         tmp_arena.allocator(),
-        \\DROP TABLE "{s}"
+        \\DROP TABLE "{s}_blobs"
     ,
-        .{self.table_name},
+        .{self.ctx.vtabName()},
     );
-    try self.conn.exec(query);
+    try self.ctx.conn().exec(query);
 }
 
 pub const Handle = struct {
@@ -102,18 +105,18 @@ pub const Handle = struct {
 };
 
 pub fn create(self: *Self, tmp_arena: *ArenaAllocator, size: u32) !Handle {
-    const stmt = try self.insert_stmt.acquire(tmp_arena, self);
+    const stmt = try self.insert_stmt.acquire(tmp_arena, self.ctx.*);
     defer self.insert_stmt.release();
 
     try stmt.bind(.Int64, 1, @as(i64, @intCast(size)));
 
     try stmt.exec();
-    const id = self.conn.lastInsertRowid();
+    const id = self.ctx.conn().lastInsertRowid();
     errdefer self.delete(tmp_arena, id) catch |e| {
         log.err("unable to destroy segment {}: {}", .{ id, e });
     };
 
-    const blob = try Blob.open(self.conn, self.table_name, blob_column_name, id);
+    const blob = try Blob.open(self.ctx.conn(), self.table_name, blob_column_name, id);
     return .{
         .ctx = self,
         .id = id,
@@ -121,15 +124,15 @@ pub fn create(self: *Self, tmp_arena: *ArenaAllocator, size: u32) !Handle {
     };
 }
 
-fn insertDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+fn insertDml(ctx: VtabCtxSchemaless, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
-        \\INSERT INTO "{s}" (blob)
+        \\INSERT INTO "{s}_blobs" (blob)
         \\VALUES (ZEROBLOB(?))
-    , .{self.table_name});
+    , .{ctx.vtabName()});
 }
 
 pub fn open(self: *Self, id: i64) !Handle {
-    const blob = try Blob.open(self.conn, self.table_name, blob_column_name, id);
+    const blob = try Blob.open(self.ctx.conn(), self.table_name, blob_column_name, id);
     return .{
         .ctx = self,
         .id = id,
@@ -138,15 +141,15 @@ pub fn open(self: *Self, id: i64) !Handle {
 }
 
 pub fn delete(self: *Self, tmp_arena: *ArenaAllocator, id: i64) !void {
-    const stmt = try self.delete_stmt.acquire(tmp_arena, self);
+    const stmt = try self.delete_stmt.acquire(tmp_arena, self.ctx.*);
     defer self.delete_stmt.release();
 
     try stmt.bind(.Int64, 1, @as(i64, @intCast(id)));
     try stmt.exec();
 }
 
-fn deleteDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+fn deleteDml(ctx: VtabCtxSchemaless, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
-        \\DELETE FROM "{s}" WHERE id = ?
-    , .{self.table_name});
+        \\DELETE FROM "{s}_blobs" WHERE id = ?
+    , .{ctx.vtabName()});
 }

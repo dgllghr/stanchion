@@ -10,7 +10,7 @@ const Stmt = sqlite.Stmt;
 /// Use an arena allocator so that the callback function can optionally allocate (or not) and
 /// deallocation remains consistent
 pub fn InitSqlFn(comptime Ctx: type) type {
-    return fn (*const Ctx, *ArenaAllocator) Allocator.Error![]const u8;
+    return fn (Ctx, *ArenaAllocator) Allocator.Error![]const u8;
 }
 
 pub fn Cell(comptime Ctx: type) type {
@@ -36,10 +36,10 @@ pub fn Cell(comptime Ctx: type) type {
         /// Acquires the only statement from the cell, initializing the statement if it has not
         /// been initialized previously. Since there is only one statement, every call to `take`
         /// must be followed by `release` and concurrent access of the statement is not allowed.
-        pub fn acquire(self: *Self, arena: *ArenaAllocator, ctx: *const Ctx) !Stmt {
+        pub fn acquire(self: *Self, arena: *ArenaAllocator, ctx: Ctx) !Stmt {
             if (self.stmt == null) {
                 const sql = try self.initSql(ctx, arena);
-                self.stmt = try ctx.conn.prepare(sql);
+                self.stmt = try ctx.conn().prepare(sql);
             }
             return self.stmt.?;
         }
@@ -76,14 +76,14 @@ pub fn Pool(comptime Ctx: type) type {
         /// Acquires a statement from the cell, initializing a new statement if one is not
         /// available. Every call to `take` must be followed by a call to `release` for the
         /// statement to ensure the statement is returned to the pool.
-        pub fn acquire(self: *Self, arena: *ArenaAllocator, ctx: *const Ctx) !Stmt {
+        pub fn acquire(self: *Self, arena: *ArenaAllocator, ctx: Ctx) !Stmt {
             const stmt_exst = self.stmts.popOrNull();
             if (stmt_exst) |s| {
                 return s;
             }
 
             const sql = try self.initSql(ctx, arena);
-            const stmt = try ctx.conn.prepare(sql);
+            const stmt = try ctx.conn().prepare(sql);
             // Ensure there is capacity for the stmt so when `release` is called capacity does not
             // need to be expanded (and `release` does not return an error)
             try self.stmts.ensureUnusedCapacity(1);

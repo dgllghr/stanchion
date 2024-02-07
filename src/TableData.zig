@@ -6,45 +6,43 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const sqlite = @import("sqlite3.zig");
 const Conn = sqlite.Conn;
 
+const VtabCtxSchemaless = @import("ctx.zig").VtabCtxSchemaless;
 const prep_stmt = @import("prepared_stmt.zig");
 const sql_fmt = @import("sql_fmt.zig");
 
-conn: Conn,
-vtab_table_name: []const u8,
+ctx: *const VtabCtxSchemaless,
 
 read_data: StmtCell,
 write_data: StmtCell,
 
 const Self = @This();
 
-const StmtCell = prep_stmt.Cell(Self);
+const StmtCell = prep_stmt.Cell(VtabCtxSchemaless);
 
 pub const Key = enum(u8) {
     next_rowid = 1,
 };
 
-pub fn create(tmp_arena: *ArenaAllocator, conn: Conn, vtab_table_name: []const u8) !Self {
+pub fn create(tmp_arena: *ArenaAllocator, ctx: *const VtabCtxSchemaless) !Self {
     const ddl = try fmt.allocPrintZ(tmp_arena.allocator(),
         \\CREATE TABLE "{s}_tabledata" (
         \\  key INTEGER NOT NULL,
         \\  value ANY NOT NULL,
         \\  PRIMARY KEY (key)
         \\)
-    , .{vtab_table_name});
-    try conn.exec(ddl);
+    , .{ctx.vtabName()});
+    try ctx.conn().exec(ddl);
 
     return .{
-        .conn = conn,
-        .vtab_table_name = vtab_table_name,
+        .ctx = ctx,
         .read_data = StmtCell.init(&readQuery),
         .write_data = StmtCell.init(&writeDml),
     };
 }
 
-pub fn open(conn: Conn, vtab_table_name: []const u8) !Self {
+pub fn open(ctx: *const VtabCtxSchemaless) !Self {
     return .{
-        .conn = conn,
-        .vtab_table_name = vtab_table_name,
+        .ctx = ctx,
         .read_data = StmtCell.init(&readQuery),
         .write_data = StmtCell.init(&writeDml),
     };
@@ -60,13 +58,13 @@ pub fn drop(self: *Self, tmp_arena: *ArenaAllocator) !void {
         tmp_arena.allocator(),
         \\DROP TABLE "{s}_tabledata"
     ,
-        .{self.vtab_table_name},
+        .{self.ctx.vtabName()},
     );
-    try self.conn.exec(query);
+    try self.ctx.conn().exec(query);
 }
 
 pub fn readInt(self: *Self, tmp_arena: *ArenaAllocator, key: Key) !?i64 {
-    const stmt = try self.read_data.acquire(tmp_arena, self);
+    const stmt = try self.read_data.acquire(tmp_arena, self.ctx.*);
     defer self.read_data.release();
 
     try stmt.bind(.Int64, 1, @intFromEnum(key));
@@ -79,16 +77,16 @@ pub fn readInt(self: *Self, tmp_arena: *ArenaAllocator, key: Key) !?i64 {
     return stmt.read(.Int64, false, 0);
 }
 
-fn readQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+fn readQuery(ctx: VtabCtxSchemaless, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
         \\SELECT value
         \\FROM "{s}_tabledata"
         \\WHERE key = ?
-    , .{self.vtab_table_name});
+    , .{ctx.vtabName()});
 }
 
 pub fn writeInt(self: *Self, tmp_arena: *ArenaAllocator, key: Key, value: i64) !void {
-    const stmt = try self.write_data.acquire(tmp_arena, self);
+    const stmt = try self.write_data.acquire(tmp_arena, self.ctx.*);
     defer self.write_data.release();
 
     try stmt.bind(.Int64, 1, @intFromEnum(key));
@@ -97,10 +95,10 @@ pub fn writeInt(self: *Self, tmp_arena: *ArenaAllocator, key: Key, value: i64) !
     try stmt.exec();
 }
 
-fn writeDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+fn writeDml(ctx: VtabCtxSchemaless, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
         \\INSERT INTO "{s}_tabledata" (key, value)
         \\VALUES (?, ?)
         \\ON CONFLICT DO UPDATE SET value = excluded.value
-    , .{self.vtab_table_name});
+    , .{ctx.vtabName()});
 }

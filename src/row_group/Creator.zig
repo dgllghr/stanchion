@@ -592,6 +592,7 @@ fn Limiter(comptime Cur: type) type {
 }
 
 test "row group: create single from pending inserts" {
+    const VtabCtx = @import("../ctx.zig").VtabCtx;
     const datasets = @import("../testing/datasets.zig");
     const SchemaManager = @import("../schema.zig").Manager;
     _ = SchemaManager;
@@ -603,23 +604,15 @@ test "row group: create single from pending inserts" {
     var arena = ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const table_name = "test";
-    const schema = datasets.planets.schema;
+    const ctx = VtabCtx.init(conn, "test", datasets.planets.schema);
 
-    var blob_manager = try BlobManager.init(&arena, &arena, conn, table_name);
+    var blob_manager = try BlobManager.init(&arena, &arena, &ctx.base);
     defer blob_manager.deinit();
-    var table_data = try TableData.create(&arena, conn, table_name);
+    var table_data = try TableData.create(&arena, &ctx.base);
     defer table_data.deinit();
-    var row_group_index = try Index.create(&arena, conn, table_name, &schema);
+    var row_group_index = try Index.create(&arena, &ctx);
     defer row_group_index.deinit();
-    var pending_inserts = try PendingInserts.create(
-        arena.allocator(),
-        &arena,
-        conn,
-        table_name,
-        &schema,
-        &table_data,
-    );
+    var pending_inserts = try PendingInserts.create(arena.allocator(), &arena, &ctx, &table_data);
     errdefer pending_inserts.deinit();
 
     const table_values = datasets.planets.fixed_data[0..4];
@@ -632,16 +625,16 @@ test "row group: create single from pending inserts" {
     var new_row_group: Self.NewRowGroup = undefined;
     new_row_group.row_group_entry.record_count = 0;
     new_row_group.start_sort_key = try arena.allocator()
-        .alloc(MemoryValue, schema.sort_key.len);
+        .alloc(MemoryValue, ctx.schema.sort_key.len);
     new_row_group.row_group_entry.column_segment_ids = try arena.allocator()
-        .alloc(i64, schema.columns.len);
+        .alloc(i64, ctx.schema.columns.len);
 
     {
         var creator = try Self.init(
             std.testing.allocator,
             &arena,
             &blob_manager,
-            &schema,
+            &ctx.schema,
             &row_group_index,
             &pending_inserts,
             4,
@@ -657,7 +650,7 @@ test "row group: create single from pending inserts" {
         _ = try creator.createSingle(&arena, &pend_inserts_cursor, &new_row_group);
     }
 
-    var cursor = try Cursor.init(arena.allocator(), &blob_manager, &schema);
+    var cursor = try Cursor.init(arena.allocator(), &blob_manager, &ctx.schema);
     cursor.rowGroup().* = new_row_group.row_group_entry;
 
     var idx: usize = 0;
@@ -680,6 +673,7 @@ test "row group: create single from pending inserts" {
 }
 
 test "row group: create all" {
+    const VtabCtx = @import("../ctx.zig").VtabCtx;
     const datasets = @import("../testing/datasets.zig");
     const TableData = @import("../TableData.zig");
 
@@ -689,23 +683,15 @@ test "row group: create all" {
     var arena = ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const table_name = "test";
-    const schema = datasets.planets.schema;
+    const ctx = VtabCtx.init(conn, "test", datasets.planets.schema);
 
-    var blob_manager = try BlobManager.init(&arena, &arena, conn, table_name);
+    var blob_manager = try BlobManager.init(&arena, &arena, &ctx.base);
     defer blob_manager.deinit();
-    var table_data = try TableData.create(&arena, conn, table_name);
+    var table_data = try TableData.create(&arena, &ctx.base);
     defer table_data.deinit();
-    var row_group_index = try Index.create(&arena, conn, table_name, &schema);
+    var row_group_index = try Index.create(&arena, &ctx);
     defer row_group_index.deinit();
-    var pending_inserts = try PendingInserts.create(
-        arena.allocator(),
-        &arena,
-        conn,
-        table_name,
-        &schema,
-        &table_data,
-    );
+    var pending_inserts = try PendingInserts.create(arena.allocator(), &arena, &ctx, &table_data);
     errdefer pending_inserts.deinit();
 
     const table_values = datasets.planets.fixed_data[0..4];
@@ -720,7 +706,7 @@ test "row group: create all" {
             std.testing.allocator,
             &arena,
             &blob_manager,
-            &schema,
+            &ctx.schema,
             &row_group_index,
             &pending_inserts,
             4,
@@ -730,7 +716,7 @@ test "row group: create all" {
         try creator.createAll(&arena);
     }
 
-    var cursor = try Cursor.init(arena.allocator(), &blob_manager, &schema);
+    var cursor = try Cursor.init(arena.allocator(), &blob_manager, &ctx.schema);
     var rg_index_cursor = try row_group_index.cursor(&arena);
     rg_index_cursor.readEntry(cursor.rowGroup());
 
@@ -757,6 +743,7 @@ test "row group: create all" {
 }
 
 pub fn benchRowGroupCreate() !void {
+    const VtabCtx = @import("../ctx.zig").VtabCtx;
     const datasets = @import("../testing/datasets.zig");
     const TableData = @import("../TableData.zig");
     const TmpDiskDb = @import("../testing/TmpDiskDb.zig");
@@ -770,21 +757,18 @@ pub fn benchRowGroupCreate() !void {
     var arena = ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
-    const table_name = "test";
-    const schema = datasets.planets.schema;
+    const ctx = VtabCtx.init(conn, "test", datasets.planets.schema);
 
-    var blob_manager = try BlobManager.init(&arena, &arena, conn, table_name);
+    var blob_manager = try BlobManager.init(&arena, &arena, &ctx.base);
     defer blob_manager.deinit();
-    var table_data = try TableData.create(&arena, conn, table_name);
+    var table_data = try TableData.create(&arena, &ctx.base);
     defer table_data.deinit();
-    var row_group_index = try Index.create(&arena, conn, table_name, &schema);
+    var row_group_index = try Index.create(&arena, &ctx);
     defer row_group_index.deinit();
     var pending_inserts = try PendingInserts.create(
         arena.allocator(),
         &arena,
-        conn,
-        table_name,
-        &schema,
+        &ctx,
         &table_data,
     );
     errdefer pending_inserts.deinit();
@@ -814,7 +798,7 @@ pub fn benchRowGroupCreate() !void {
                 std.heap.page_allocator,
                 &arena,
                 &blob_manager,
-                &schema,
+                &ctx.schema,
                 &row_group_index,
                 &pending_inserts,
                 row_group_len,
@@ -846,7 +830,7 @@ pub fn benchRowGroupCreate() !void {
                 std.heap.page_allocator,
                 &arena,
                 &blob_manager,
-                &schema,
+                &ctx.schema,
                 &row_group_index,
                 &pending_inserts,
                 row_group_len,

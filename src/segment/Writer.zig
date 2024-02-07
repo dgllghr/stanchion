@@ -186,6 +186,7 @@ pub fn end(self: *Self) !void {
 }
 
 test "segment: writer" {
+    const VtabCtxSchemaless = @import("../ctx.zig").VtabCtxSchemaless;
     const BlobManager = @import("../BlobManager.zig");
     const MemoryValue = @import("../value.zig").MemoryValue;
 
@@ -218,7 +219,12 @@ test "segment: writer" {
     var arena = ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var blob_manager = try BlobManager.init(&arena, &arena, conn, "test");
+    const ctx = VtabCtxSchemaless{
+        .conn_ = conn,
+        .vtab_name = "test",
+    };
+
+    var blob_manager = try BlobManager.init(&arena, &arena, &ctx);
     defer blob_manager.deinit();
 
     var blob_handle = try blob_manager.create(&arena, plan.totalLen());

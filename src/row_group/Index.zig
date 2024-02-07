@@ -12,6 +12,7 @@ const Conn = sqlite.Conn;
 const Stmt = sqlite.Stmt;
 const ValueRef = sqlite.ValueRef;
 
+const VtabCtx = @import("../ctx.zig").VtabCtx;
 const prep_stmt = @import("../prepared_stmt.zig");
 const sql_fmt = @import("../sql_fmt.zig");
 
@@ -44,10 +45,7 @@ const index_mod = @import("../index.zig");
 const RangeOp = index_mod.RangeOp;
 const SortKeyRange = index_mod.SortKeyRange;
 
-conn: Conn,
-vtab_table_name: []const u8,
-sort_key: []const usize,
-columns_len: usize,
+ctx: *const VtabCtx,
 
 insert: StmtCell,
 delete: StmtCell,
@@ -55,7 +53,7 @@ merge_candidates: StmtCell,
 
 const Self = @This();
 
-const StmtCell = prep_stmt.Cell(Self);
+const StmtCell = prep_stmt.Cell(VtabCtx);
 
 pub const Entry = struct {
     rowid_segment_id: i64,
@@ -67,24 +65,13 @@ pub const Entry = struct {
     }
 };
 
-pub fn create(
-    tmp_arena: *ArenaAllocator,
-    conn: Conn,
-    vtab_table_name: []const u8,
-    schema: *const Schema,
-) !Self {
-    const ddl_formatter = CreateTableDdlFormatter{
-        .vtab_table_name = vtab_table_name,
-        .schema = schema,
-    };
+pub fn create(tmp_arena: *ArenaAllocator, ctx: *const VtabCtx) !Self {
+    const ddl_formatter = CreateTableDdlFormatter{ .ctx = ctx.* };
     const ddl = try fmt.allocPrintZ(tmp_arena.allocator(), "{s}", .{ddl_formatter});
-    try conn.exec(ddl);
+    try ctx.conn().exec(ddl);
 
     return .{
-        .conn = conn,
-        .vtab_table_name = vtab_table_name,
-        .sort_key = schema.sort_key,
-        .columns_len = schema.columns.len,
+        .ctx = ctx,
         .insert = StmtCell.init(&insertDml),
         .delete = StmtCell.init(&deleteEntryDml),
         .merge_candidates = StmtCell.init(&mergeCandidatesQuery),
@@ -92,8 +79,7 @@ pub fn create(
 }
 
 const CreateTableDdlFormatter = struct {
-    vtab_table_name: []const u8,
-    schema: *const Schema,
+    ctx: VtabCtx,
 
     pub fn format(
         self: @This(),
@@ -104,10 +90,10 @@ const CreateTableDdlFormatter = struct {
         try writer.print(
             \\CREATE TABLE "{s}_rowgroupindex" (
         ,
-            .{self.vtab_table_name},
+            .{self.ctx.vtabName()},
         );
-        for (self.schema.sort_key, 0..) |sk_index, sk_rank| {
-            const col = &self.schema.columns[sk_index];
+        for (self.ctx.sortKey(), 0..) |sk_index, sk_rank| {
+            const col = &self.ctx.columns()[sk_index];
             const data_type = DataType.SqliteFormatter{
                 .data_type = col.column_type.data_type,
             };
@@ -116,7 +102,7 @@ const CreateTableDdlFormatter = struct {
         try writer.print("start_rowid_value INTEGER NOT NULL,", .{});
         // The `col_N` columns are uesd for storing values for insert entries and
         // segment IDs for row group entries
-        for (0..self.schema.columns.len) |rank| {
+        for (0..self.ctx.columns().len) |rank| {
             try writer.print("col_{d}_segment_id INTEGER NULL,", .{rank});
         }
         try writer.print(
@@ -124,7 +110,7 @@ const CreateTableDdlFormatter = struct {
             \\record_count INTEGER NOT NULL,
             \\PRIMARY KEY (
         , .{});
-        for (0..self.schema.sort_key.len) |sk_rank| {
+        for (0..self.ctx.sortKey().len) |sk_rank| {
             try writer.print("start_sk_value_{d},", .{sk_rank});
         }
         try writer.print("start_rowid_value)", .{});
@@ -143,10 +129,8 @@ test "row group index: format create table ddl" {
     defer conn.close();
 
     inline for (.{ datasets.planets, datasets.all_column_types }) |s| {
-        const formatter = CreateTableDdlFormatter{
-            .vtab_table_name = s.name,
-            .schema = &s.schema,
-        };
+        const ctx = VtabCtx.init(conn, s.name, s.schema);
+        const formatter = CreateTableDdlFormatter{ .ctx = ctx };
         const ddl = try fmt.allocPrintZ(allocator, "{}", .{formatter});
         defer allocator.free(ddl);
 
@@ -157,12 +141,9 @@ test "row group index: format create table ddl" {
     }
 }
 
-pub fn open(conn: Conn, vtab_table_name: []const u8, schema: *const Schema) Self {
+pub fn open(ctx: *const VtabCtx) Self {
     return .{
-        .conn = conn,
-        .vtab_table_name = vtab_table_name,
-        .sort_key = schema.sort_key,
-        .columns_len = schema.columns.len,
+        .ctx = ctx,
         .insert = StmtCell.init(&insertDml),
         .delete = StmtCell.init(&deleteEntryDml),
         .merge_candidates = StmtCell.init(&mergeCandidatesQuery),
@@ -180,9 +161,9 @@ pub fn drop(self: *Self, tmp_arena: *ArenaAllocator) !void {
         tmp_arena.allocator(),
         \\DROP TABLE "{s}_rowgroupindex"
     ,
-        .{self.vtab_table_name},
+        .{self.ctx.vtabName()},
     );
-    try self.conn.exec(query);
+    try self.ctx.conn().exec(query);
 }
 
 pub fn insertEntry(
@@ -192,34 +173,34 @@ pub fn insertEntry(
     start_rowid: i64,
     entry: *const Entry,
 ) !void {
-    const stmt = try self.insert.acquire(tmp_arena, self);
+    const stmt = try self.insert.acquire(tmp_arena, self.ctx.*);
     defer self.insert.release();
 
     try stmt.bind(.Int64, 1, @intCast(entry.record_count));
     try stmt.bind(.Int64, 2, start_rowid);
     try stmt.bind(.Int64, 3, entry.rowid_segment_id);
-    for (0..self.sort_key.len, 4..) |sk_idx, idx| {
+    for (0..self.ctx.sortKey().len, 4..) |sk_idx, idx| {
         const sk_value = try start_sort_key.readValue(sk_idx);
         try sk_value.bind(stmt, idx);
     }
-    const col_idx_start = self.sort_key.len + 4;
-    for (0..self.columns_len, col_idx_start..) |rank, idx| {
+    const col_idx_start = self.ctx.sortKey().len + 4;
+    for (0..self.ctx.columns().len, col_idx_start..) |rank, idx| {
         try stmt.bind(.Int64, idx, entry.column_segment_ids[rank]);
     }
 
     try stmt.exec();
 }
 
-fn insertDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+fn insertDml(ctx: VtabCtx, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
         \\INSERT INTO "{s}_rowgroupindex" (
         \\  record_count, start_rowid_value, rowid_segment_id, {s}, {s})
         \\VALUES (?, ?, ?, {s})
     , .{
-        self.vtab_table_name,
-        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = self.sort_key.len },
-        sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = self.columns_len },
-        sql_fmt.ParameterListFormatter{ .len = self.columns_len + self.sort_key.len },
+        ctx.vtabName(),
+        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = ctx.sortKey().len },
+        sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = ctx.columns().len },
+        sql_fmt.ParameterListFormatter{ .len = ctx.columns().len + ctx.sortKey().len },
     });
 }
 
@@ -232,15 +213,10 @@ test "row group index: insert dml" {
     const conn = try Conn.openInMemory();
     defer conn.close();
 
-    const self = Self{
-        .conn = conn,
-        .vtab_table_name = table_name,
+    const ctx = VtabCtx.init(conn, table_name, .{
+        .columns = &[3]Column{ undefined, undefined, undefined },
         .sort_key = &[_]usize{ 0, 2 },
-        .columns_len = 3,
-        .insert = undefined,
-        .delete = undefined,
-        .merge_candidates = undefined,
-    };
+    });
 
     const expected =
         \\INSERT INTO "test_rowgroupindex" (
@@ -251,7 +227,7 @@ test "row group index: insert dml" {
         \\)
         \\VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ;
-    const result = try self.insertDml(&arena);
+    const result = try insertDml(ctx, &arena);
     try testing.expectEqualSlices(u8, expected, result);
 }
 
@@ -261,26 +237,26 @@ pub fn deleteEntry(
     start_sort_key: anytype,
     start_rowid: i64,
 ) !void {
-    const stmt = try self.delete.acquire(tmp_arena, self);
+    const stmt = try self.delete.acquire(tmp_arena, self.ctx.*);
     defer self.delete.release();
 
-    for (0..self.sort_key.len) |idx| {
+    for (0..self.ctx.sortKey().len) |idx| {
         const sk_value = try start_sort_key.readValue(idx);
         try sk_value.bind(stmt, idx + 1);
     }
-    try stmt.bind(.Int64, self.sort_key.len + 1, start_rowid);
+    try stmt.bind(.Int64, self.ctx.sortKey().len + 1, start_rowid);
 
     try stmt.exec();
 }
 
-fn deleteEntryDml(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+fn deleteEntryDml(ctx: VtabCtx, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
         \\DELETE FROM "{s}_rowgroupindex"
         \\WHERE ({}, start_rowid_value) = ({}, ?)
     , .{
-        self.vtab_table_name,
-        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = self.sort_key.len },
-        sql_fmt.ParameterListFormatter{ .len = self.sort_key.len },
+        ctx.vtabName(),
+        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = ctx.sortKey().len },
+        sql_fmt.ParameterListFormatter{ .len = ctx.sortKey().len },
     });
 }
 
@@ -311,38 +287,37 @@ pub const EntriesCursor = struct {
 };
 
 pub fn cursor(self: *Self, tmp_arena: *ArenaAllocator) !EntriesCursor {
-    const query = try self.cursorQuery(tmp_arena);
-    const stmt = try self.conn.prepare(query);
+    const query = try cursorQuery(self.ctx.*, tmp_arena);
+    const stmt = try self.ctx.conn().prepare(query);
     const eof = !(try stmt.next());
     return .{
         .stmt = stmt,
-        .columns_len = self.columns_len,
+        .columns_len = self.ctx.columns().len,
         .is_eof = eof,
     };
 }
 
-fn cursorQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+fn cursorQuery(ctx: VtabCtx, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
         \\SELECT record_count, rowid_segment_id, {}
         \\FROM "{s}_rowgroupindex"
         \\ORDER BY {}, start_rowid_value
     , .{
-        sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = self.columns_len },
-        self.vtab_table_name,
-        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = self.sort_key.len },
+        sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = ctx.columns().len },
+        ctx.vtabName(),
+        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = ctx.sortKey().len },
     });
 }
 
 pub fn cursorPartial(self: *Self, tmp_arena: *ArenaAllocator, range: SortKeyRange) !EntriesCursor {
-    const query = try self.cursorPartialQuery(tmp_arena, range);
-    const stmt = self.conn.prepare(query) catch |e| {
-        std.log.debug("{s}", .{self.conn.lastErrMsg()});
+    const query = try cursorPartialQuery(self.ctx.*, tmp_arena, range);
+    const stmt = self.ctx.conn().prepare(query) catch |e| {
+        std.log.debug("{s}", .{self.ctx.conn().lastErrMsg()});
         return e;
     };
 
     for (0..range.args.valuesLen()) |idx| {
         const value = try range.args.readValue(idx);
-        std.log.debug("value {}", .{value});
         try value.bind(stmt, idx + 1);
     }
 
@@ -350,42 +325,42 @@ pub fn cursorPartial(self: *Self, tmp_arena: *ArenaAllocator, range: SortKeyRang
 
     return .{
         .stmt = stmt,
-        .columns_len = self.columns_len,
+        .columns_len = self.ctx.columns().len,
         .is_eof = eof,
     };
 }
 
-fn cursorPartialQuery(self: *const Self, arena: *ArenaAllocator, range: SortKeyRange) ![]const u8 {
+fn cursorPartialQuery(ctx: VtabCtx, arena: *ArenaAllocator, range: SortKeyRange) ![]const u8 {
     // TODO these queries need to be dynamically generated to account for varying lengths of
     //      the key and the different comparison ops (and all combinations of those). However,
     //      these queries may benefit from a dynamic cache keyed by the sort key length and the
     //      last op. This is likely to help due to common user/application common access
     //      patterns
     return switch (range.last_op) {
-        .to_inc, .to_exc => self.cursorPartialLtLe(arena, range),
-        .eq, .from_inc, .from_exc => self.cursorPartialEqGtGe(arena, range),
-        .between => self.cursorPartialBetween(arena, range),
+        .to_inc, .to_exc => cursorPartialLtLe(ctx, arena, range),
+        .eq, .from_inc, .from_exc => cursorPartialEqGtGe(ctx, arena, range),
+        .between => cursorPartialBetween(ctx, arena, range),
     };
 }
 
-fn cursorPartialLtLe(self: *const Self, arena: *ArenaAllocator, range: SortKeyRange) ![]const u8 {
+fn cursorPartialLtLe(ctx: VtabCtx, arena: *ArenaAllocator, range: SortKeyRange) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
         \\SELECT record_count, rowid_segment_id, {}, {}, start_rowid_value
         \\FROM "{s}_rowgroupindex"
         \\WHERE ({s}) {s} ({s})
         \\ORDER BY {}, start_rowid_value
     , .{
-        sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = self.columns_len },
-        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = self.sort_key.len },
-        self.vtab_table_name,
+        sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = ctx.columns().len },
+        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = ctx.sortKey().len },
+        ctx.vtabName(),
         sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = range.args.valuesLen() },
         lastOpSymbol(range.last_op),
         sql_fmt.ParameterListFormatter{ .len = range.args.valuesLen() },
-        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = self.sort_key.len },
+        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = ctx.sortKey().len },
     });
 }
 
-fn cursorPartialEqGtGe(self: *const Self, arena: *ArenaAllocator, range: SortKeyRange) ![]const u8 {
+fn cursorPartialEqGtGe(ctx: VtabCtx, arena: *ArenaAllocator, range: SortKeyRange) ![]const u8 {
     // These filters need to consider that the minimum value that should be included in the
     // result set is in a row group that has a starting sort key that comes before the
     // minimum value.
@@ -417,22 +392,22 @@ fn cursorPartialEqGtGe(self: *const Self, arena: *ArenaAllocator, range: SortKey
         // sort_key_values CTE
         sql_fmt.ColumnListLenFormatter("? AS sk_value_{d}"){ .len = range.args.valuesLen() },
         // first_row_group CTE
-        sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = self.columns_len },
-        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = self.sort_key.len },
-        self.vtab_table_name,
+        sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = ctx.columns().len },
+        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = ctx.sortKey().len },
+        ctx.vtabName(),
         sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = range.args.valuesLen() },
         sql_fmt.ColumnListLenFormatter("skv.sk_value_{d}"){ .len = range.args.valuesLen() },
-        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d} DESC"){ .len = self.sort_key.len },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d} DESC"){ .len = ctx.sortKey().len },
         // main query
-        sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = self.columns_len },
-        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = self.sort_key.len },
-        sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = self.columns_len },
-        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
-        self.vtab_table_name,
+        sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = ctx.columns().len },
+        sql_fmt.ColumnListLenFormatter("start_sk_value_{d}"){ .len = ctx.sortKey().len },
+        sql_fmt.ColumnListLenFormatter("col_{d}_segment_id"){ .len = ctx.columns().len },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = ctx.sortKey().len },
+        ctx.vtabName(),
         sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = range.args.valuesLen() },
         lastOpSymbol(range.last_op),
         sql_fmt.ColumnListLenFormatter("skv.sk_value_{d}"){ .len = range.args.valuesLen() },
-        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = ctx.sortKey().len },
     });
 }
 
@@ -446,11 +421,7 @@ fn lastOpSymbol(last_op: RangeOp) []const u8 {
     };
 }
 
-fn cursorPartialBetween(
-    self: *const Self,
-    arena: *ArenaAllocator,
-    range: SortKeyRange,
-) ![]const u8 {
+fn cursorPartialBetween(ctx: VtabCtx, arena: *ArenaAllocator, range: SortKeyRange) ![]const u8 {
     const args_len = range.args.valuesLen();
 
     // The last two values are the upper and lower bounds of the range, so they apply to the same
@@ -487,21 +458,21 @@ fn cursorPartialBetween(
         // sort_key_values CTE
         sql_fmt.ColumnListLenFormatter("? AS sk_value_{d}"){ .len = args_len },
         // first_row_group CTE
-        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
-        self.vtab_table_name,
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = ctx.sortKey().len },
+        ctx.vtabName(),
         sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = args_len - 1 },
         sql_fmt.ColumnListLenFormatter("skv.sk_value_{d}"){ .len = args_len - 1 },
-        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d} DESC"){ .len = self.sort_key.len },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d} DESC"){ .len = ctx.sortKey().len },
         // main query
-        sql_fmt.ColumnListLenFormatter("rgi.col_{d}_segment_id"){ .len = self.columns_len },
-        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
-        self.vtab_table_name,
-        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
-        sql_fmt.ColumnListLenFormatter("frg.start_sk_value_{d}"){ .len = self.sort_key.len },
+        sql_fmt.ColumnListLenFormatter("rgi.col_{d}_segment_id"){ .len = ctx.columns().len },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = ctx.sortKey().len },
+        ctx.vtabName(),
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = ctx.sortKey().len },
+        sql_fmt.ColumnListLenFormatter("frg.start_sk_value_{d}"){ .len = ctx.sortKey().len },
         sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = args_len - 1 },
         if (range.last_op.between.upper_inc) "<=" else "<",
         sql_fmt.ColumnListIndicesFormatter("skv.sk_value_{d}"){ .indices = upper_bound_indices },
-        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = ctx.sortKey().len },
     });
 }
 
@@ -583,18 +554,18 @@ pub const MergeCandidateCursor = struct {
 /// At most 1 `MergeCandidateCursor` can be active at a time. Be sure deinit is called on a
 /// `MergeCandidateCursor` before calling this function again.
 pub fn mergeCandidates(self: *Self, tmp_arena: *ArenaAllocator) !MergeCandidateCursor {
-    const stmt = try self.merge_candidates.acquire(tmp_arena, self);
+    const stmt = try self.merge_candidates.acquire(tmp_arena, self.ctx.*);
     const eof = !(try stmt.next());
     return .{
         .stmt = stmt,
         .cell = &self.merge_candidates,
-        .sort_key_len = self.sort_key.len,
-        .columns_len = self.columns_len,
+        .sort_key_len = self.ctx.sortKey().len,
+        .columns_len = self.ctx.columns().len,
         .is_eof = eof,
     };
 }
 
-fn mergeCandidatesQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
+fn mergeCandidatesQuery(ctx: VtabCtx, arena: *ArenaAllocator) ![]const u8 {
     // This query takes advantage of a feature of sqlite where aggregation functions are not
     // required on columns that aren't part of the group by. In this case, sqlite will return
     // the first row in the group, which is the first row in the set of pending inserts that
@@ -620,14 +591,14 @@ fn mergeCandidatesQuery(self: *const Self, arena: *ArenaAllocator) ![]const u8 {
         \\FROM row_groups
         \\WINDOW subsequent AS (ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING)
     , .{
-        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
-        sql_fmt.ColumnListLenFormatter("rgi.col_{d}_segment_id"){ .len = self.columns_len },
-        sql_fmt.ColumnListIndicesFormatter("pi.col_{d}"){ .indices = self.sort_key },
-        self.vtab_table_name,
-        self.vtab_table_name,
-        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
-        sql_fmt.ColumnListIndicesFormatter("pi.col_{d}"){ .indices = self.sort_key },
-        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
-        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = self.sort_key.len },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = ctx.sortKey().len },
+        sql_fmt.ColumnListLenFormatter("rgi.col_{d}_segment_id"){ .len = ctx.columns().len },
+        sql_fmt.ColumnListIndicesFormatter("pi.col_{d}"){ .indices = ctx.sortKey() },
+        ctx.vtabName(),
+        ctx.vtabName(),
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = ctx.sortKey().len },
+        sql_fmt.ColumnListIndicesFormatter("pi.col_{d}"){ .indices = ctx.sortKey() },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = ctx.sortKey().len },
+        sql_fmt.ColumnListLenFormatter("rgi.start_sk_value_{d}"){ .len = ctx.sortKey().len },
     });
 }

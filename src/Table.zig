@@ -15,6 +15,10 @@ const ValueRef = sqlite.ValueRef;
 const vtab = @import("sqlite3/vtab.zig");
 const Result = vtab.Result;
 
+const ctx_mod = @import("ctx.zig");
+const VtabCtx = ctx_mod.VtabCtx;
+const VtabCtxSchemaless = ctx_mod.VtabCtxSchemaless;
+
 const schema_mod = @import("schema.zig");
 const Schema = schema_mod.Schema;
 const SchemaDef = schema_mod.SchemaDef;
@@ -35,18 +39,19 @@ const Index = index.Index;
 
 const Self = @This();
 
-// TODO remove this
 allocator: Allocator,
 table_static_arena: ArenaAllocator,
-name: []const u8,
-schema: Schema,
+
+ctx: VtabCtx,
+
 table_data: TableData,
 blob_manager: BlobManager,
 row_group_index: RowGroupIndex,
 pending_inserts: PendingInserts,
-row_group_creator: RowGroupCreator,
-dirty: bool,
 
+row_group_creator: RowGroupCreator,
+
+dirty: bool,
 warned_update_delete_not_supported: bool = false,
 
 pub const InitError = error{
@@ -88,17 +93,18 @@ pub fn create(
     self.table_static_arena = ArenaAllocator.init(allocator);
     errdefer self.table_static_arena.deinit();
 
-    self.name = try self.table_static_arena.allocator().dupe(u8, args[2]);
+    const name = try self.table_static_arena.allocator().dupe(u8, args[2]);
+    self.ctx.base = VtabCtxSchemaless.init(conn, name);
 
-    var schema_mgr = try SchemaManager.init(cb_ctx.arena, conn, self.name);
+    var schema_mgr = try SchemaManager.init(cb_ctx.arena, &self.ctx.base);
     defer schema_mgr.deinit();
 
-    self.schema = schema_mgr.create(&self.table_static_arena, cb_ctx.arena, &def) catch |e| {
+    self.ctx.schema = schema_mgr.create(&self.table_static_arena, cb_ctx.arena, &def) catch |e| {
         cb_ctx.setErrorMessage("error creating schema: {any}", .{e});
         return e;
     };
 
-    self.table_data = TableData.create(cb_ctx.arena, conn, self.name) catch |e| {
+    self.table_data = TableData.create(cb_ctx.arena, &self.ctx.base) catch |e| {
         cb_ctx.setErrorMessage("error creating table data: {any}", .{e});
         return e;
     };
@@ -107,20 +113,14 @@ pub fn create(
     self.blob_manager = BlobManager.init(
         &self.table_static_arena,
         cb_ctx.arena,
-        conn,
-        self.name,
+        &self.ctx.base,
     ) catch |e| {
         cb_ctx.setErrorMessage("error creating blob manager: {any}", .{e});
         return e;
     };
     errdefer self.blob_manager.deinit();
 
-    self.row_group_index = RowGroupIndex.create(
-        cb_ctx.arena,
-        conn,
-        self.name,
-        &self.schema,
-    ) catch |e| {
+    self.row_group_index = RowGroupIndex.create(cb_ctx.arena, &self.ctx) catch |e| {
         cb_ctx.setErrorMessage("error creating row group index: {any}", .{e});
         return e;
     };
@@ -129,9 +129,7 @@ pub fn create(
     self.pending_inserts = PendingInserts.create(
         allocator,
         cb_ctx.arena,
-        conn,
-        self.name,
-        &self.schema,
+        &self.ctx,
         &self.table_data,
     ) catch |e| {
         cb_ctx.setErrorMessage("error creating pending inserts: {any}", .{e});
@@ -143,7 +141,7 @@ pub fn create(
         allocator,
         &self.table_static_arena,
         &self.blob_manager,
-        &self.schema,
+        &self.ctx.schema,
         &self.row_group_index,
         &self.pending_inserts,
         10_000,
@@ -202,17 +200,18 @@ pub fn connect(
     self.table_static_arena = ArenaAllocator.init(allocator);
     errdefer self.table_static_arena.deinit();
 
-    self.name = try self.table_static_arena.allocator().dupe(u8, args[2]);
+    const name = try self.table_static_arena.allocator().dupe(u8, args[2]);
+    self.ctx.base = VtabCtxSchemaless.init(conn, name);
 
-    var schema_mgr = try SchemaManager.init(cb_ctx.arena, conn, self.name);
+    var schema_mgr = try SchemaManager.init(cb_ctx.arena, &self.ctx.base);
     defer schema_mgr.deinit();
 
-    self.schema = schema_mgr.load(&self.table_static_arena, cb_ctx.arena) catch |e| {
+    self.ctx.schema = schema_mgr.load(&self.table_static_arena, cb_ctx.arena) catch |e| {
         cb_ctx.setErrorMessage("error loading schema: {any}", .{e});
         return e;
     };
 
-    self.table_data = TableData.open(conn, self.name) catch |e| {
+    self.table_data = TableData.open(&self.ctx.base) catch |e| {
         cb_ctx.setErrorMessage("error opening table data: {any}", .{e});
         return e;
     };
@@ -221,23 +220,20 @@ pub fn connect(
     self.blob_manager = BlobManager.init(
         &self.table_static_arena,
         cb_ctx.arena,
-        conn,
-        self.name,
+        &self.ctx.base,
     ) catch |e| {
         cb_ctx.setErrorMessage("error creating blob manager: {any}", .{e});
         return e;
     };
     errdefer self.blob_manager.deinit();
 
-    self.row_group_index = RowGroupIndex.open(conn, self.name, &self.schema);
+    self.row_group_index = RowGroupIndex.open(&self.ctx);
     errdefer self.row_group_index.deinit();
 
     self.pending_inserts = PendingInserts.open(
         allocator,
         cb_ctx.arena,
-        conn,
-        self.name,
-        &self.schema,
+        &self.ctx,
         &self.table_data,
     ) catch |e| {
         cb_ctx.setErrorMessage("error opening pending inserts: {any}", .{e});
@@ -249,7 +245,7 @@ pub fn connect(
         allocator,
         &self.table_static_arena,
         &self.blob_manager,
-        &self.schema,
+        &self.ctx.schema,
         &self.row_group_index,
         &self.pending_inserts,
         10_000,
@@ -273,16 +269,28 @@ pub fn disconnect(self: *Self) void {
 
 pub fn destroy(self: *Self, cb_ctx: *vtab.CallbackContext) void {
     self.table_data.drop(cb_ctx.arena) catch |e| {
-        std.log.err("failed to drop shadow table {s}_tabledata: {any}", .{ self.name, e });
+        std.log.err(
+            "failed to drop shadow table {s}_tabledata: {any}",
+            .{ self.ctx.vtabName(), e },
+        );
     };
     self.pending_inserts.drop(cb_ctx.arena) catch |e| {
-        std.log.err("failed to drop shadow table {s}_pendinginserts: {any}", .{ self.name, e });
+        std.log.err(
+            "failed to drop shadow table {s}_pendinginserts: {any}",
+            .{ self.ctx.vtabName(), e },
+        );
     };
     self.row_group_index.drop(cb_ctx.arena) catch |e| {
-        std.log.err("failed to drop shadow table {s}_rowgroupindex: {any}", .{ self.name, e });
+        std.log.err(
+            "failed to drop shadow table {s}_rowgroupindex: {any}",
+            .{ self.ctx.vtabName(), e },
+        );
     };
     self.blob_manager.destroy(cb_ctx.arena) catch |e| {
-        std.log.err("failed to drop shadow table {s}_blobs: {any}", .{ self.name, e });
+        std.log.err(
+            "failed to drop shadow table {s}_blobs: {any}",
+            .{ self.ctx.vtabName(), e },
+        );
     };
 
     self.disconnect();
@@ -292,7 +300,7 @@ pub fn ddl(self: *Self, allocator: Allocator) ![:0]const u8 {
     return fmt.allocPrintZ(
         allocator,
         "{}",
-        .{self.schema.sqliteDdlFormatter(self.name)},
+        .{self.ctx.schema.sqliteDdlFormatter(self.ctx.vtabName())},
     );
 }
 
@@ -327,7 +335,7 @@ pub fn bestIndex(
     cb_ctx: *vtab.CallbackContext,
     best_index_info: vtab.BestIndexInfo,
 ) BestIndexError!void {
-    try index.chooseBestIndex(cb_ctx.arena, self.schema.sort_key, best_index_info);
+    try index.chooseBestIndex(cb_ctx.arena, self.ctx.sortKey(), best_index_info);
 }
 
 pub fn begin(_: *Self, _: *vtab.CallbackContext) !void {
@@ -401,7 +409,7 @@ pub fn open(
     return Cursor.init(
         self.allocator,
         &self.blob_manager,
-        &self.schema,
+        &self.ctx.schema,
         &self.row_group_index,
         &self.pending_inserts,
     );

@@ -13,6 +13,8 @@ const BestIndexError = vtab.BestIndexError;
 const BestIndexInfo = vtab.BestIndexInfo;
 const Result = vtab.Result;
 
+const VtabCtxSchemaless = @import("../ctx.zig").VtabCtxSchemaless;
+
 const schema_mod = @import("../schema.zig");
 const ColumnType = schema_mod.ColumnType;
 const Schema = schema_mod.Schema;
@@ -54,7 +56,7 @@ pub fn ddl(_: *Self, allocator: Allocator) ![:0]const u8 {
         \\  encoding_code INTEGER NOT NULL,
         \\  encoding TEXT NOT NULL,
         \\  size_bytes INTEGER NOT NULL,
-        \\  
+        \\
         \\  table_name TEXT HIDDEN,
         \\  segment_id INTEGER HIDDEN
         \\)
@@ -106,9 +108,9 @@ pub fn open(
 
 pub const Cursor = struct {
     lifetime_arena: ArenaAllocator,
-    conn: Conn,
 
-    table_name: []const u8,
+    vtab_ctx: VtabCtxSchemaless,
+
     segment_id: i64,
     column_type: ColumnType,
     header: SegmentHeader,
@@ -119,9 +121,7 @@ pub const Cursor = struct {
     pub fn init(allocator: Allocator, conn: Conn) Cursor {
         return .{
             .lifetime_arena = ArenaAllocator.init(allocator),
-            .conn = conn,
-
-            .table_name = undefined,
+            .vtab_ctx = VtabCtxSchemaless.init(conn, undefined),
             .segment_id = undefined,
             .column_type = undefined,
             .header = undefined,
@@ -143,11 +143,11 @@ pub const Cursor = struct {
     ) !void {
         // TODO do not return an error if these types are wrong
         const table_name_ref = (try filter_args.readValue(0)).asText();
-        self.table_name = try self.lifetime_arena.allocator()
+        self.vtab_ctx.vtab_name = try self.lifetime_arena.allocator()
             .dupe(u8, table_name_ref);
         const segment_id = (try filter_args.readValue(1)).asI64();
 
-        var stmt = try self.conn.prepare(
+        var stmt = try self.vtab_ctx.conn().prepare(
             \\SELECT column_rank
             \\FROM stanchion_segments(?)
             \\WHERE segment_id = ?
@@ -155,7 +155,7 @@ pub const Cursor = struct {
         );
         defer stmt.deinit();
 
-        try stmt.bind(.Text, 1, self.table_name);
+        try stmt.bind(.Text, 1, self.vtab_ctx.vtabName());
         try stmt.bind(.Int64, 2, segment_id);
         const exists = try stmt.next();
         if (!exists) {
@@ -164,7 +164,7 @@ pub const Cursor = struct {
         const col_rank = stmt.read(.Int64, false, 0);
 
         // TODO this unnecessarily loads all columns and stores them for the duration of the cursor
-        var schema_manager = try SchemaManager.init(cb_ctx.arena, self.conn, self.table_name);
+        var schema_manager = try SchemaManager.init(cb_ctx.arena, &self.vtab_ctx);
         defer schema_manager.deinit();
         const schema = try schema_manager.load(&self.lifetime_arena, cb_ctx.arena);
         if (col_rank == -1) {
@@ -173,7 +173,7 @@ pub const Cursor = struct {
             self.column_type = schema.columns[@intCast(col_rank)].column_type;
         }
 
-        var blob_manager = try BlobManager.init(cb_ctx.arena, cb_ctx.arena, self.conn, self.table_name);
+        var blob_manager = try BlobManager.init(cb_ctx.arena, cb_ctx.arena, &self.vtab_ctx);
         var blob_handle = try blob_manager.open(segment_id);
         defer blob_handle.tryClose();
 
@@ -245,7 +245,7 @@ pub const Cursor = struct {
                 result.setI64(@intCast(meta.byte_len));
             },
             // table_name
-            6 => result.setText(self.table_name),
+            6 => result.setText(self.vtab_ctx.vtabName()),
             // segment_id
             7 => result.setI64(self.segment_id),
             else => unreachable,
