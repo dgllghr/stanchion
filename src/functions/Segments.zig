@@ -133,17 +133,22 @@ pub const Cursor = struct {
 
         // Match SQLite behavior of `PRAGMA table_info()` and return empty set when the table does
         // not exist
-        var schema_manager = SchemaManager.open(cb_ctx.arena, &self.vtab_ctx.base) catch |e| {
-            if (e == SchemaManager.Error.ShadowTableDoesNotExist) {
-                return;
-            }
-            return e;
-        };
+        var schema_manager = SchemaManager.init(&self.vtab_ctx.base);
         defer schema_manager.deinit();
+        const schema_table_exists = try schema_manager.table().checkExists(cb_ctx.arena);
+        if (!schema_table_exists) {
+            return;
+        }
+
         self.vtab_ctx.schema = try schema_manager.load(&self.lifetime_arena, cb_ctx.arena);
 
-        self.rg_index = RowGroupIndex.open(&self.vtab_ctx);
+        self.rg_index = RowGroupIndex.init(&self.vtab_ctx);
         errdefer self.rg_index.deinit();
+        const rgi_table_exists = try self.rg_index.table().checkExists(cb_ctx.arena);
+        if (!rgi_table_exists) {
+            return;
+        }
+
         self.rg_index_cursor = try self.rg_index.cursor(cb_ctx.arena);
         errdefer self.rg_index_cursor.deinit();
 

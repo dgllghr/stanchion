@@ -9,9 +9,10 @@ const Conn = sqlite.Conn;
 const Stmt = sqlite.Stmt;
 const ValueRef = sqlite.ValueRef;
 
-const VtabCtx = @import("ctx.zig").VtabCtx;
 const prep_stmt = @import("prepared_stmt.zig");
 const sql_fmt = @import("sql_fmt.zig");
+const MakeShadowTable = @import("shadow_table.zig").ShadowTable;
+const VtabCtx = @import("ctx.zig").VtabCtx;
 
 const schema_mod = @import("schema.zig");
 const Column = schema_mod.Column;
@@ -41,17 +42,13 @@ const Self = @This();
 const StmtCell = prep_stmt.Cell(VtabCtx);
 const StmtPool = prep_stmt.Pool(VtabCtx);
 
-pub fn create(
+pub fn init(
     allocator: Allocator,
     tmp_arena: *ArenaAllocator,
     ctx: *const VtabCtx,
     table_data: *TableData,
 ) !Self {
-    const ddl_formatter = CreateTableDdlFormatter{ .ctx = ctx.* };
-    const ddl = try fmt.allocPrintZ(tmp_arena.allocator(), "{s}", .{ddl_formatter});
-    try ctx.conn().exec(ddl);
-
-    return .{
+    var self = Self{
         .ctx = ctx,
         .table_data = table_data,
         .next_rowid = 1,
@@ -61,76 +58,12 @@ pub fn create(
         .delete_from = StmtCell.init(&deleteFromQuery),
         .delete_range = StmtCell.init(&deleteRangeQuery),
     };
-}
 
-const CreateTableDdlFormatter = struct {
-    ctx: VtabCtx,
-
-    pub fn format(
-        self: @This(),
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        try writer.print(
-            \\CREATE TABLE "{s}_pendinginserts" (
-            \\rowid INTEGER NOT NULL,
-        ,
-            .{self.ctx.vtabName()},
-        );
-        for (self.ctx.columns(), 0..) |*col, rank| {
-            const col_type = ColumnType.SqliteFormatter{
-                .column_type = col.column_type,
-            };
-            try writer.print("col_{d} {},", .{ rank, col_type });
-        }
-        try writer.print(
-            \\PRIMARY KEY (
-        , .{});
-        for (self.ctx.sortKey()) |col_rank| {
-            try writer.print("col_{d},", .{col_rank});
-        }
-        try writer.print("rowid)", .{});
-        try writer.print(") WITHOUT ROWID", .{});
+    // Initialize the rowid to the proper value if the table exists
+    if (try self.table().checkExists(tmp_arena)) {
+        try self.loadNextRowid(tmp_arena);
     }
-};
 
-test "pending inserts: format create table ddl" {
-    const allocator = testing.allocator;
-    const datasets = @import("testing/datasets.zig");
-
-    const ctx = VtabCtx.init(undefined, "planets", datasets.planets.schema);
-
-    const formatter = CreateTableDdlFormatter{ .ctx = ctx };
-    const ddl = try fmt.allocPrintZ(allocator, "{}", .{formatter});
-    defer allocator.free(ddl);
-
-    const conn = try @import("sqlite3/Conn.zig").openInMemory();
-    defer conn.close();
-
-    conn.exec(ddl) catch |e| {
-        std.log.err("sqlite error: {s}", .{conn.lastErrMsg()});
-        return e;
-    };
-}
-
-pub fn open(
-    allocator: Allocator,
-    tmp_arena: *ArenaAllocator,
-    ctx: *const VtabCtx,
-    table_data: *TableData,
-) !Self {
-    var self = Self{
-        .ctx = ctx,
-        .table_data = table_data,
-        .next_rowid = 0,
-        .insert_stmt = StmtCell.init(&insertDml),
-        .cursor_from_start = StmtPool.init(allocator, &cursorFromStartQuery),
-        .cursor_from_key = StmtPool.init(allocator, &cursorFromKeyQuery),
-        .delete_from = StmtCell.init(&deleteFromQuery),
-        .delete_range = StmtCell.init(&deleteRangeQuery),
-    };
-    try self.loadNextRowid(tmp_arena);
     return self;
 }
 
@@ -142,14 +75,72 @@ pub fn deinit(self: *Self) void {
     self.delete_range.deinit();
 }
 
-pub fn drop(self: *Self, tmp_arena: *ArenaAllocator) !void {
-    const query = try fmt.allocPrintZ(
-        tmp_arena.allocator(),
-        \\DROP TABLE "{s}_pendinginserts"
-    ,
-        .{self.ctx.vtabName()},
-    );
-    try self.ctx.conn().exec(query);
+pub const ShadowTable = MakeShadowTable(VtabCtx, struct {
+    pub const suffix: []const u8 = "pendinginserts";
+
+    pub fn createTableDdl(ctx: VtabCtx, allocator: Allocator) ![:0]const u8 {
+        const ddl_formatter = CreateTableDdlFormatter{ .ctx = ctx };
+        return fmt.allocPrintZ(allocator, "{s}", .{ddl_formatter});
+    }
+
+    const CreateTableDdlFormatter = struct {
+        ctx: VtabCtx,
+
+        pub fn format(
+            self: @This(),
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            try writer.print(
+                \\CREATE TABLE "{s}_pendinginserts" (
+                \\rowid INTEGER NOT NULL,
+            ,
+                .{self.ctx.vtabName()},
+            );
+            for (self.ctx.columns(), 0..) |*col, rank| {
+                const col_type = ColumnType.SqliteFormatter{
+                    .column_type = col.column_type,
+                };
+                try writer.print("col_{d} {},", .{ rank, col_type });
+            }
+            try writer.print(
+                \\PRIMARY KEY (
+            , .{});
+            for (self.ctx.sortKey()) |col_rank| {
+                try writer.print("col_{d},", .{col_rank});
+            }
+            try writer.print("rowid)", .{});
+            try writer.print(") WITHOUT ROWID", .{});
+        }
+    };
+
+    test "pending inserts: format create table ddl" {
+        const allocator = testing.allocator;
+        const datasets = @import("testing/datasets.zig");
+
+        const ctx = VtabCtx.init(undefined, "planets", datasets.planets.schema);
+
+        const formatter = CreateTableDdlFormatter{ .ctx = ctx };
+        const ddl = try fmt.allocPrintZ(allocator, "{}", .{formatter});
+        defer allocator.free(ddl);
+
+        const conn = try @import("sqlite3/Conn.zig").openInMemory();
+        defer conn.close();
+
+        conn.exec(ddl) catch |e| {
+            std.log.err("sqlite error: {s}", .{conn.lastErrMsg()});
+            return e;
+        };
+    }
+});
+
+test {
+    _ = ShadowTable;
+}
+
+pub fn table(self: Self) ShadowTable {
+    return .{ .ctx = self.ctx };
 }
 
 pub fn insert(self: *Self, tmp_arena: *ArenaAllocator, values: anytype) !i64 {

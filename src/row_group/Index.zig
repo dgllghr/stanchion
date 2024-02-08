@@ -12,9 +12,10 @@ const Conn = sqlite.Conn;
 const Stmt = sqlite.Stmt;
 const ValueRef = sqlite.ValueRef;
 
-const VtabCtx = @import("../ctx.zig").VtabCtx;
 const prep_stmt = @import("../prepared_stmt.zig");
 const sql_fmt = @import("../sql_fmt.zig");
+const MakeShadowTable = @import("../shadow_table.zig").ShadowTable;
+const VtabCtx = @import("../ctx.zig").VtabCtx;
 
 const schema_mod = @import("../schema.zig");
 const Column = schema_mod.Column;
@@ -65,83 +66,7 @@ pub const Entry = struct {
     }
 };
 
-pub fn create(tmp_arena: *ArenaAllocator, ctx: *const VtabCtx) !Self {
-    const ddl_formatter = CreateTableDdlFormatter{ .ctx = ctx.* };
-    const ddl = try fmt.allocPrintZ(tmp_arena.allocator(), "{s}", .{ddl_formatter});
-    try ctx.conn().exec(ddl);
-
-    return .{
-        .ctx = ctx,
-        .insert = StmtCell.init(&insertDml),
-        .delete = StmtCell.init(&deleteEntryDml),
-        .merge_candidates = StmtCell.init(&mergeCandidatesQuery),
-    };
-}
-
-const CreateTableDdlFormatter = struct {
-    ctx: VtabCtx,
-
-    pub fn format(
-        self: @This(),
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        try writer.print(
-            \\CREATE TABLE "{s}_rowgroupindex" (
-        ,
-            .{self.ctx.vtabName()},
-        );
-        for (self.ctx.sortKey(), 0..) |sk_index, sk_rank| {
-            const col = &self.ctx.columns()[sk_index];
-            const data_type = DataType.SqliteFormatter{
-                .data_type = col.column_type.data_type,
-            };
-            try writer.print("start_sk_value_{d} {s} NOT NULL,", .{ sk_rank, data_type });
-        }
-        try writer.print("start_rowid_value INTEGER NOT NULL,", .{});
-        // The `col_N` columns are uesd for storing values for insert entries and
-        // segment IDs for row group entries
-        for (0..self.ctx.columns().len) |rank| {
-            try writer.print("col_{d}_segment_id INTEGER NULL,", .{rank});
-        }
-        try writer.print(
-            \\rowid_segment_id INTEGER NOT NULL,
-            \\record_count INTEGER NOT NULL,
-            \\PRIMARY KEY (
-        , .{});
-        for (0..self.ctx.sortKey().len) |sk_rank| {
-            try writer.print("start_sk_value_{d},", .{sk_rank});
-        }
-        try writer.print("start_rowid_value)", .{});
-        // TODO partial unique index on table status entry?
-        // TODO in tests it would be nice to add some check constraints to ensure
-        //      data is populated correctly based on the entry_type
-        try writer.print(") WITHOUT ROWID", .{});
-    }
-};
-
-test "row group index: format create table ddl" {
-    const datasets = @import("../testing/datasets.zig");
-    const allocator = testing.allocator;
-
-    const conn = try Conn.openInMemory();
-    defer conn.close();
-
-    inline for (.{ datasets.planets, datasets.all_column_types }) |s| {
-        const ctx = VtabCtx.init(conn, s.name, s.schema);
-        const formatter = CreateTableDdlFormatter{ .ctx = ctx };
-        const ddl = try fmt.allocPrintZ(allocator, "{}", .{formatter});
-        defer allocator.free(ddl);
-
-        conn.exec(ddl) catch |e| {
-            std.log.err("sqlite error: {s}", .{conn.lastErrMsg()});
-            return e;
-        };
-    }
-}
-
-pub fn open(ctx: *const VtabCtx) Self {
+pub fn init(ctx: *const VtabCtx) Self {
     return .{
         .ctx = ctx,
         .insert = StmtCell.init(&insertDml),
@@ -156,14 +81,84 @@ pub fn deinit(self: *Self) void {
     self.merge_candidates.deinit();
 }
 
-pub fn drop(self: *Self, tmp_arena: *ArenaAllocator) !void {
-    const query = try fmt.allocPrintZ(
-        tmp_arena.allocator(),
-        \\DROP TABLE "{s}_rowgroupindex"
-    ,
-        .{self.ctx.vtabName()},
-    );
-    try self.ctx.conn().exec(query);
+pub const ShadowTable = MakeShadowTable(VtabCtx, struct {
+    pub const suffix: []const u8 = "rowgroupindex";
+
+    pub fn createTableDdl(ctx: VtabCtx, allocator: Allocator) ![:0]const u8 {
+        const ddl_formatter = CreateTableDdlFormatter{ .ctx = ctx };
+        return fmt.allocPrintZ(allocator, "{s}", .{ddl_formatter});
+    }
+
+    const CreateTableDdlFormatter = struct {
+        ctx: VtabCtx,
+
+        pub fn format(
+            self: @This(),
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            try writer.print(
+                \\CREATE TABLE "{s}_rowgroupindex" (
+            ,
+                .{self.ctx.vtabName()},
+            );
+            for (self.ctx.sortKey(), 0..) |sk_index, sk_rank| {
+                const col = &self.ctx.columns()[sk_index];
+                const data_type = DataType.SqliteFormatter{
+                    .data_type = col.column_type.data_type,
+                };
+                try writer.print("start_sk_value_{d} {s} NOT NULL,", .{ sk_rank, data_type });
+            }
+            try writer.print("start_rowid_value INTEGER NOT NULL,", .{});
+            // The `col_N` columns are uesd for storing values for insert entries and
+            // segment IDs for row group entries
+            for (0..self.ctx.columns().len) |rank| {
+                try writer.print("col_{d}_segment_id INTEGER NULL,", .{rank});
+            }
+            try writer.print(
+                \\rowid_segment_id INTEGER NOT NULL,
+                \\record_count INTEGER NOT NULL,
+                \\PRIMARY KEY (
+            , .{});
+            for (0..self.ctx.sortKey().len) |sk_rank| {
+                try writer.print("start_sk_value_{d},", .{sk_rank});
+            }
+            try writer.print("start_rowid_value)", .{});
+            // TODO partial unique index on table status entry?
+            // TODO in tests it would be nice to add some check constraints to ensure
+            //      data is populated correctly based on the entry_type
+            try writer.print(") WITHOUT ROWID", .{});
+        }
+    };
+
+    test "row group index: format create table ddl" {
+        const datasets = @import("../testing/datasets.zig");
+        const allocator = testing.allocator;
+
+        const conn = try Conn.openInMemory();
+        defer conn.close();
+
+        inline for (.{ datasets.planets, datasets.all_column_types }) |s| {
+            const ctx = VtabCtx.init(conn, s.name, s.schema);
+            const formatter = CreateTableDdlFormatter{ .ctx = ctx };
+            const ddl = try fmt.allocPrintZ(allocator, "{}", .{formatter});
+            defer allocator.free(ddl);
+
+            conn.exec(ddl) catch |e| {
+                std.log.err("sqlite error: {s}", .{conn.lastErrMsg()});
+                return e;
+            };
+        }
+    }
+});
+
+test {
+    _ = ShadowTable;
+}
+
+pub fn table(self: Self) ShadowTable {
+    return .{ .ctx = self.ctx };
 }
 
 pub fn insertEntry(

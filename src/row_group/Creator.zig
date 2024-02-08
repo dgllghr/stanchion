@@ -606,14 +606,18 @@ test "row group: create single from pending inserts" {
 
     const ctx = VtabCtx.init(conn, "test", datasets.planets.schema);
 
-    var blob_manager = try BlobManager.init(&arena, &arena, &ctx.base);
+    var blob_manager = try BlobManager.init(&arena, &ctx.base);
     defer blob_manager.deinit();
-    var table_data = try TableData.create(&arena, &ctx.base);
+    try blob_manager.table().create(&arena);
+    var table_data = TableData.init(&ctx.base);
     defer table_data.deinit();
-    var row_group_index = try Index.create(&arena, &ctx);
+    try table_data.table().create(&arena);
+    var row_group_index = Index.init(&ctx);
     defer row_group_index.deinit();
-    var pending_inserts = try PendingInserts.create(arena.allocator(), &arena, &ctx, &table_data);
+    try row_group_index.table().create(&arena);
+    var pending_inserts = try PendingInserts.init(arena.allocator(), &arena, &ctx, &table_data);
     errdefer pending_inserts.deinit();
+    try pending_inserts.table().create(&arena);
 
     const table_values = datasets.planets.fixed_data[0..4];
     const rowids = [_]i64{ 1, 2, 4, 3 };
@@ -685,14 +689,18 @@ test "row group: create all" {
 
     const ctx = VtabCtx.init(conn, "test", datasets.planets.schema);
 
-    var blob_manager = try BlobManager.init(&arena, &arena, &ctx.base);
+    var blob_manager = try BlobManager.init(&arena, &ctx.base);
     defer blob_manager.deinit();
-    var table_data = try TableData.create(&arena, &ctx.base);
+    try blob_manager.table().create(&arena);
+    var table_data = TableData.init(&ctx.base);
     defer table_data.deinit();
-    var row_group_index = try Index.create(&arena, &ctx);
+    try table_data.table().create(&arena);
+    var row_group_index = Index.init(&ctx);
     defer row_group_index.deinit();
-    var pending_inserts = try PendingInserts.create(arena.allocator(), &arena, &ctx, &table_data);
+    try row_group_index.table().create(&arena);
+    var pending_inserts = try PendingInserts.init(arena.allocator(), &arena, &ctx, &table_data);
     errdefer pending_inserts.deinit();
+    try pending_inserts.table().create(&arena);
 
     const table_values = datasets.planets.fixed_data[0..4];
     const rowids = [_]i64{ 1, 2, 4, 3 };
@@ -759,19 +767,18 @@ pub fn benchRowGroupCreate() !void {
 
     const ctx = VtabCtx.init(conn, "test", datasets.planets.schema);
 
-    var blob_manager = try BlobManager.init(&arena, &arena, &ctx.base);
+    var blob_manager = try BlobManager.init(&arena, &ctx.base);
     defer blob_manager.deinit();
-    var table_data = try TableData.create(&arena, &ctx.base);
+    try blob_manager.table().create(&arena);
+    var table_data = TableData.init(&ctx.base);
     defer table_data.deinit();
-    var row_group_index = try Index.create(&arena, &ctx);
+    try table_data.table().create(&arena);
+    var row_group_index = Index.init(&ctx);
     defer row_group_index.deinit();
-    var pending_inserts = try PendingInserts.create(
-        arena.allocator(),
-        &arena,
-        &ctx,
-        &table_data,
-    );
+    try row_group_index.table().create(&arena);
+    var pending_inserts = try PendingInserts.init(arena.allocator(), &arena, &ctx, &table_data);
     errdefer pending_inserts.deinit();
+    try pending_inserts.table().create(&arena);
 
     const seed = @as(u64, @truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))));
     var prng = std.rand.DefaultPrng.init(seed);

@@ -167,13 +167,13 @@ pub const Cursor = struct {
 
         // Match SQLite behavior of `PRAGMA table_info()` and return empty set when the table does
         // not exist
-        var schema_manager = SchemaManager.open(cb_ctx.arena, &self.vtab_ctx) catch |e| {
-            if (e == SchemaManager.Error.ShadowTableDoesNotExist) {
-                return;
-            }
-            return e;
-        };
+        var schema_manager = SchemaManager.init(&self.vtab_ctx);
         defer schema_manager.deinit();
+        const schema_table_exists = try schema_manager.table().checkExists(cb_ctx.arena);
+        if (!schema_table_exists) {
+            return;
+        }
+
         const schema = try schema_manager.load(&self.lifetime_arena, cb_ctx.arena);
         if (col_rank == -1) {
             self.column_type = ColumnType.Rowid;
@@ -181,7 +181,8 @@ pub const Cursor = struct {
             self.column_type = schema.columns[@intCast(col_rank)].column_type;
         }
 
-        var blob_manager = try BlobManager.init(cb_ctx.arena, cb_ctx.arena, &self.vtab_ctx);
+        var blob_manager = try BlobManager.init(cb_ctx.arena, &self.vtab_ctx);
+        defer blob_manager.deinit();
         var blob_handle = try blob_manager.open(segment_id);
         defer blob_handle.tryClose();
 

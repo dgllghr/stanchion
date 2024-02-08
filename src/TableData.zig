@@ -1,14 +1,16 @@
 const std = @import("std");
 const fmt = std.fmt;
 const testing = std.testing;
+const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
 const sqlite = @import("sqlite3.zig");
 const Conn = sqlite.Conn;
 
-const VtabCtxSchemaless = @import("ctx.zig").VtabCtxSchemaless;
 const prep_stmt = @import("prepared_stmt.zig");
 const sql_fmt = @import("sql_fmt.zig");
+const MakeShadowTable = @import("shadow_table.zig").ShadowTable;
+const VtabCtxSchemaless = @import("ctx.zig").VtabCtxSchemaless;
 
 ctx: *const VtabCtxSchemaless,
 
@@ -23,24 +25,7 @@ pub const Key = enum(u8) {
     next_rowid = 1,
 };
 
-pub fn create(tmp_arena: *ArenaAllocator, ctx: *const VtabCtxSchemaless) !Self {
-    const ddl = try fmt.allocPrintZ(tmp_arena.allocator(),
-        \\CREATE TABLE "{s}_tabledata" (
-        \\  key INTEGER NOT NULL,
-        \\  value ANY NOT NULL,
-        \\  PRIMARY KEY (key)
-        \\)
-    , .{ctx.vtabName()});
-    try ctx.conn().exec(ddl);
-
-    return .{
-        .ctx = ctx,
-        .read_data = StmtCell.init(&readQuery),
-        .write_data = StmtCell.init(&writeDml),
-    };
-}
-
-pub fn open(ctx: *const VtabCtxSchemaless) !Self {
+pub fn init(ctx: *const VtabCtxSchemaless) Self {
     return .{
         .ctx = ctx,
         .read_data = StmtCell.init(&readQuery),
@@ -53,14 +38,22 @@ pub fn deinit(self: *Self) void {
     self.write_data.deinit();
 }
 
-pub fn drop(self: *Self, tmp_arena: *ArenaAllocator) !void {
-    const query = try fmt.allocPrintZ(
-        tmp_arena.allocator(),
-        \\DROP TABLE "{s}_tabledata"
-    ,
-        .{self.ctx.vtabName()},
-    );
-    try self.ctx.conn().exec(query);
+pub const ShadowTable = MakeShadowTable(VtabCtxSchemaless, struct {
+    pub const suffix: []const u8 = "tabledata";
+
+    pub fn createTableDdl(ctx: VtabCtxSchemaless, allocator: Allocator) ![:0]const u8 {
+        return fmt.allocPrintZ(allocator,
+            \\CREATE TABLE "{s}_tabledata" (
+            \\  key INTEGER NOT NULL,
+            \\  value ANY NOT NULL,
+            \\  PRIMARY KEY (key)
+            \\)
+        , .{ctx.vtabName()});
+    }
+});
+
+pub fn table(self: Self) ShadowTable {
+    return .{ .ctx = self.ctx };
 }
 
 pub fn readInt(self: *Self, tmp_arena: *ArenaAllocator, key: Key) !?i64 {

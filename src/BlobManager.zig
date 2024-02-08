@@ -1,14 +1,16 @@
 const std = @import("std");
 const fmt = std.fmt;
 const log = std.log;
+const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
 const sqlite = @import("sqlite3.zig");
 const Blob = sqlite.Blob;
 const Conn = sqlite.Conn;
 
-const VtabCtxSchemaless = @import("ctx.zig").VtabCtxSchemaless;
 const prep_stmt = @import("prepared_stmt.zig");
+const MakeShadowTable = @import("shadow_table.zig").ShadowTable;
+const VtabCtxSchemaless = @import("ctx.zig").VtabCtxSchemaless;
 
 ctx: *const VtabCtxSchemaless,
 
@@ -24,13 +26,7 @@ const StmtCell = prep_stmt.Cell(VtabCtxSchemaless);
 
 const blob_column_name = "blob";
 
-pub fn init(
-    lifetime_arena: *ArenaAllocator,
-    tmp_arena: *ArenaAllocator,
-    ctx: *const VtabCtxSchemaless,
-) !Self {
-    try setup(tmp_arena, ctx.*);
-
+pub fn init(lifetime_arena: *ArenaAllocator, ctx: *const VtabCtxSchemaless) !Self {
     const table_name = try fmt.allocPrintZ(
         lifetime_arena.allocator(),
         "{s}_blobs",
@@ -45,29 +41,26 @@ pub fn init(
     };
 }
 
-fn setup(tmp_arena: *ArenaAllocator, ctx: VtabCtxSchemaless) !void {
-    const query = try fmt.allocPrintZ(tmp_arena.allocator(),
-        \\CREATE TABLE IF NOT EXISTS "{s}_blobs" (
-        \\  id INTEGER NOT NULL PRIMARY KEY,
-        \\  blob BLOB NOT NULL
-        \\)
-    , .{ctx.vtabName()});
-    try ctx.conn().exec(query);
-}
-
 pub fn deinit(self: *Self) void {
     self.insert_stmt.deinit();
     self.delete_stmt.deinit();
 }
 
-pub fn destroy(self: *Self, tmp_arena: *ArenaAllocator) !void {
-    const query = try fmt.allocPrintZ(
-        tmp_arena.allocator(),
-        \\DROP TABLE "{s}_blobs"
-    ,
-        .{self.ctx.vtabName()},
-    );
-    try self.ctx.conn().exec(query);
+pub const ShadowTable = MakeShadowTable(VtabCtxSchemaless, struct {
+    pub const suffix: []const u8 = "blobs";
+
+    pub fn createTableDdl(ctx: VtabCtxSchemaless, allocator: Allocator) ![:0]const u8 {
+        return fmt.allocPrintZ(allocator,
+            \\CREATE TABLE IF NOT EXISTS "{s}_blobs" (
+            \\  id INTEGER NOT NULL PRIMARY KEY,
+            \\  blob BLOB NOT NULL
+            \\)
+        , .{ctx.vtabName()});
+    }
+});
+
+pub fn table(self: Self) ShadowTable {
+    return .{ .ctx = self.ctx };
 }
 
 pub const Handle = struct {

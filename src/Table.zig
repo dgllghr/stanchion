@@ -19,6 +19,8 @@ const ctx_mod = @import("ctx.zig");
 const VtabCtx = ctx_mod.VtabCtx;
 const VtabCtxSchemaless = ctx_mod.VtabCtxSchemaless;
 
+const ShadowTableError = @import("shadow_table.zig").Error;
+
 const schema_mod = @import("schema.zig");
 const Schema = schema_mod.Schema;
 const SchemaDef = schema_mod.SchemaDef;
@@ -57,7 +59,8 @@ warned_update_delete_not_supported: bool = false,
 pub const InitError = error{
     NoColumns,
     UnsupportedDb,
-} || SchemaDef.ParseError || SchemaManager.Error || SqliteErorr || mem.Allocator.Error;
+} || SchemaDef.ParseError || SchemaManager.Error || SqliteErorr || Allocator.Error ||
+    ShadowTableError;
 
 pub fn create(
     self: *Self,
@@ -96,41 +99,43 @@ pub fn create(
     const name = try self.table_static_arena.allocator().dupe(u8, args[2]);
     self.ctx.base = VtabCtxSchemaless.init(conn, name);
 
-    var schema_mgr = try SchemaManager.create(cb_ctx.arena, &self.ctx.base);
+    var schema_mgr = SchemaManager.init(&self.ctx.base);
     defer schema_mgr.deinit();
+    schema_mgr.table().create(cb_ctx.arena) catch |e| {
+        cb_ctx.setErrorMessage("error creating columns table: {any}", .{e});
+        return e;
+    };
 
-    self.ctx.schema = schema_mgr.createSchema(
-        &self.table_static_arena,
-        cb_ctx.arena,
-        &def,
-    ) catch |e| {
+    self.ctx.schema = schema_mgr.create(&self.table_static_arena, cb_ctx.arena, &def) catch |e| {
         cb_ctx.setErrorMessage("error creating schema: {any}", .{e});
         return e;
     };
 
-    self.table_data = TableData.create(cb_ctx.arena, &self.ctx.base) catch |e| {
-        cb_ctx.setErrorMessage("error creating table data: {any}", .{e});
+    self.table_data = TableData.init(&self.ctx.base);
+    errdefer self.table_data.deinit();
+    self.table_data.table().create(cb_ctx.arena) catch |e| {
+        cb_ctx.setErrorMessage("error creating tabledata table: {any}", .{e});
         return e;
     };
-    errdefer self.table_data.deinit();
 
-    self.blob_manager = BlobManager.init(
-        &self.table_static_arena,
-        cb_ctx.arena,
-        &self.ctx.base,
-    ) catch |e| {
+    self.blob_manager = BlobManager.init(&self.table_static_arena, &self.ctx.base) catch |e| {
         cb_ctx.setErrorMessage("error creating blob manager: {any}", .{e});
         return e;
     };
     errdefer self.blob_manager.deinit();
-
-    self.row_group_index = RowGroupIndex.create(cb_ctx.arena, &self.ctx) catch |e| {
-        cb_ctx.setErrorMessage("error creating row group index: {any}", .{e});
+    self.blob_manager.table().create(cb_ctx.arena) catch |e| {
+        cb_ctx.setErrorMessage("error creating blobs table: {any}", .{e});
         return e;
     };
-    errdefer self.row_group_index.deinit();
 
-    self.pending_inserts = PendingInserts.create(
+    self.row_group_index = RowGroupIndex.init(&self.ctx);
+    errdefer self.row_group_index.deinit();
+    self.row_group_index.table().create(cb_ctx.arena) catch |e| {
+        cb_ctx.setErrorMessage("error creating rowgroupindex table: {any}", .{e});
+        return e;
+    };
+
+    self.pending_inserts = PendingInserts.init(
         allocator,
         cb_ctx.arena,
         &self.ctx,
@@ -140,6 +145,10 @@ pub fn create(
         return e;
     };
     errdefer self.pending_inserts.deinit();
+    self.pending_inserts.table().create(cb_ctx.arena) catch |e| {
+        cb_ctx.setErrorMessage("error creating pendinginserts table: {any}", .{e});
+        return e;
+    };
 
     self.row_group_creator = RowGroupCreator.init(
         allocator,
@@ -207,34 +216,43 @@ pub fn connect(
     const name = try self.table_static_arena.allocator().dupe(u8, args[2]);
     self.ctx.base = VtabCtxSchemaless.init(conn, name);
 
-    var schema_mgr = try SchemaManager.open(cb_ctx.arena, &self.ctx.base);
+    var schema_mgr = SchemaManager.init(&self.ctx.base);
     defer schema_mgr.deinit();
+    schema_mgr.table().verifyExists(cb_ctx.arena) catch |e| {
+        cb_ctx.setErrorMessage("columns shadow table does not exist: {any}", .{e});
+        return e;
+    };
 
     self.ctx.schema = schema_mgr.load(&self.table_static_arena, cb_ctx.arena) catch |e| {
         cb_ctx.setErrorMessage("error loading schema: {any}", .{e});
         return e;
     };
 
-    self.table_data = TableData.open(&self.ctx.base) catch |e| {
-        cb_ctx.setErrorMessage("error opening table data: {any}", .{e});
+    self.table_data = TableData.init(&self.ctx.base);
+    errdefer self.table_data.deinit();
+    self.table_data.table().verifyExists(cb_ctx.arena) catch |e| {
+        cb_ctx.setErrorMessage("tabledata shadow table does not exist: {any}", .{e});
         return e;
     };
-    errdefer self.table_data.deinit();
 
-    self.blob_manager = BlobManager.init(
-        &self.table_static_arena,
-        cb_ctx.arena,
-        &self.ctx.base,
-    ) catch |e| {
+    self.blob_manager = BlobManager.init(&self.table_static_arena, &self.ctx.base) catch |e| {
         cb_ctx.setErrorMessage("error creating blob manager: {any}", .{e});
         return e;
     };
     errdefer self.blob_manager.deinit();
+    self.blob_manager.table().verifyExists(cb_ctx.arena) catch |e| {
+        cb_ctx.setErrorMessage("blobs shadow table does not exist: {any}", .{e});
+        return e;
+    };
 
-    self.row_group_index = RowGroupIndex.open(&self.ctx);
+    self.row_group_index = RowGroupIndex.init(&self.ctx);
     errdefer self.row_group_index.deinit();
+    self.row_group_index.table().verifyExists(cb_ctx.arena) catch |e| {
+        cb_ctx.setErrorMessage("rowgroupindex shadow table does not exist: {any}", .{e});
+        return e;
+    };
 
-    self.pending_inserts = PendingInserts.open(
+    self.pending_inserts = PendingInserts.init(
         allocator,
         cb_ctx.arena,
         &self.ctx,
@@ -244,6 +262,10 @@ pub fn connect(
         return e;
     };
     errdefer self.pending_inserts.deinit();
+    self.pending_inserts.table().verifyExists(cb_ctx.arena) catch |e| {
+        cb_ctx.setErrorMessage("pendinginserts shadow table does not exist: {any}", .{e});
+        return e;
+    };
 
     self.row_group_creator = RowGroupCreator.init(
         allocator,
@@ -272,27 +294,27 @@ pub fn disconnect(self: *Self) void {
 }
 
 pub fn destroy(self: *Self, cb_ctx: *vtab.CallbackContext) void {
-    self.table_data.drop(cb_ctx.arena) catch |e| {
-        std.log.err(
-            "failed to drop shadow table {s}_tabledata: {any}",
-            .{ self.ctx.vtabName(), e },
-        );
-    };
-    self.pending_inserts.drop(cb_ctx.arena) catch |e| {
+    self.pending_inserts.table().drop(cb_ctx.arena) catch |e| {
         std.log.err(
             "failed to drop shadow table {s}_pendinginserts: {any}",
             .{ self.ctx.vtabName(), e },
         );
     };
-    self.row_group_index.drop(cb_ctx.arena) catch |e| {
+    self.row_group_index.table().drop(cb_ctx.arena) catch |e| {
         std.log.err(
             "failed to drop shadow table {s}_rowgroupindex: {any}",
             .{ self.ctx.vtabName(), e },
         );
     };
-    self.blob_manager.destroy(cb_ctx.arena) catch |e| {
+    self.blob_manager.table().drop(cb_ctx.arena) catch |e| {
         std.log.err(
             "failed to drop shadow table {s}_blobs: {any}",
+            .{ self.ctx.vtabName(), e },
+        );
+    };
+    self.table_data.table().drop(cb_ctx.arena) catch |e| {
+        std.log.err(
+            "failed to drop shadow table {s}_tabledata: {any}",
             .{ self.ctx.vtabName(), e },
         );
     };
@@ -317,7 +339,7 @@ pub fn update(
     const change_type = change_set.changeType();
     if (change_type == .Insert) {
         rowid.* = self.pending_inserts.insert(cb_ctx.arena, change_set) catch |e| {
-            cb_ctx.setErrorMessage("failed insert insert entry: {any}", .{e});
+            cb_ctx.setErrorMessage("failed to add pending insert: {any}", .{e});
             return e;
         };
 
@@ -387,18 +409,10 @@ pub fn rollbackTo(self: *Self, cb_ctx: *vtab.CallbackContext, savepoint_id: i32)
     }
 }
 
-const shadowNames = [_][:0]const u8{
-    "tabledata",
-    "blobs",
-    "columns",
-    "rowgroupindex",
-    "pendinginserts",
-};
-
-pub fn isShadowName(name: [:0]const u8) bool {
-    std.log.debug("checking shadnow name: {s}", .{name});
-    for (shadowNames) |sn| {
-        if (mem.eql(u8, sn, name)) {
+pub fn isShadowName(suffix: [:0]const u8) bool {
+    std.log.debug("checking shadow name: {s}", .{suffix});
+    inline for (.{ TableData, BlobManager, SchemaManager, RowGroupIndex, PendingInserts }) |st| {
+        if (mem.eql(u8, st.ShadowTable.suffix, suffix)) {
             return true;
         }
     }

@@ -235,8 +235,9 @@ test "segment: reader" {
         .vtab_name = "test",
     };
 
-    var blob_manager = try BlobManager.init(&arena, &arena, &ctx);
+    var blob_manager = try BlobManager.init(&arena, &ctx);
     defer blob_manager.deinit();
+    try blob_manager.table().create(&arena);
 
     var blob_handle = try blob_manager.create(&arena, plan.totalLen());
     defer blob_handle.tryClose();
