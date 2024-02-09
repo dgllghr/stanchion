@@ -46,6 +46,17 @@ pub fn ShadowTable(comptime VTabCtx: type, comptime ShadowTableDef: type) type {
             return true;
         }
 
+        /// `ctx` must have the existing name
+        pub fn rename(self: Self, tmp_arena: *ArenaAllocator, new_name: []const u8) !void {
+            const ddl = try fmt.allocPrintZ(
+                tmp_arena.allocator(),
+                \\ALTER TABLE "{s}_{s}" RENAME TO "{s}_{s}"
+            ,
+                .{ self.ctx.vtabName(), ShadowTableDef.suffix, new_name, ShadowTableDef.suffix },
+            );
+            try self.ctx.conn().exec(ddl);
+        }
+
         pub fn drop(self: Self, tmp_arena: *ArenaAllocator) !void {
             const ddl = try fmt.allocPrintZ(
                 tmp_arena.allocator(),

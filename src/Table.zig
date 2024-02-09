@@ -46,6 +46,7 @@ table_static_arena: ArenaAllocator,
 
 ctx: VtabCtx,
 
+schema_manager: SchemaManager,
 table_data: TableData,
 blob_manager: BlobManager,
 row_group_index: RowGroupIndex,
@@ -99,14 +100,18 @@ pub fn create(
     const name = try self.table_static_arena.allocator().dupe(u8, args[2]);
     self.ctx.base = VtabCtxSchemaless.init(conn, name);
 
-    var schema_mgr = SchemaManager.init(&self.ctx.base);
-    defer schema_mgr.deinit();
-    schema_mgr.table().create(cb_ctx.arena) catch |e| {
+    self.schema_manager = SchemaManager.init(&self.ctx.base);
+    errdefer self.schema_manager.deinit();
+    self.schema_manager.table().create(cb_ctx.arena) catch |e| {
         cb_ctx.setErrorMessage("error creating columns table: {any}", .{e});
         return e;
     };
 
-    self.ctx.schema = schema_mgr.create(&self.table_static_arena, cb_ctx.arena, &def) catch |e| {
+    self.ctx.schema = self.schema_manager.create(
+        &self.table_static_arena,
+        cb_ctx.arena,
+        &def,
+    ) catch |e| {
         cb_ctx.setErrorMessage("error creating schema: {any}", .{e});
         return e;
     };
@@ -216,14 +221,14 @@ pub fn connect(
     const name = try self.table_static_arena.allocator().dupe(u8, args[2]);
     self.ctx.base = VtabCtxSchemaless.init(conn, name);
 
-    var schema_mgr = SchemaManager.init(&self.ctx.base);
-    defer schema_mgr.deinit();
-    schema_mgr.table().verifyExists(cb_ctx.arena) catch |e| {
+    self.schema_manager = SchemaManager.init(&self.ctx.base);
+    errdefer self.schema_manager.deinit();
+    self.schema_manager.table().verifyExists(cb_ctx.arena) catch |e| {
         cb_ctx.setErrorMessage("columns shadow table does not exist: {any}", .{e});
         return e;
     };
 
-    self.ctx.schema = schema_mgr.load(&self.table_static_arena, cb_ctx.arena) catch |e| {
+    self.ctx.schema = self.schema_manager.load(&self.table_static_arena, cb_ctx.arena) catch |e| {
         cb_ctx.setErrorMessage("error loading schema: {any}", .{e});
         return e;
     };
@@ -284,11 +289,13 @@ pub fn connect(
 }
 
 pub fn disconnect(self: *Self) void {
+    std.log.debug("disconnecting from table {s}", .{self.ctx.vtabName()});
     self.row_group_creator.deinit();
     self.pending_inserts.deinit();
     self.row_group_index.deinit();
     self.table_data.deinit();
     self.blob_manager.deinit();
+    self.schema_manager.deinit();
 
     self.table_static_arena.deinit();
 }
@@ -318,6 +325,12 @@ pub fn destroy(self: *Self, cb_ctx: *vtab.CallbackContext) void {
             .{ self.ctx.vtabName(), e },
         );
     };
+    self.schema_manager.table().drop(cb_ctx.arena) catch |e| {
+        std.log.err(
+            "failed to drop shadow table {s}_columns: {any}",
+            .{ self.ctx.vtabName(), e },
+        );
+    };
 
     self.disconnect();
 }
@@ -328,6 +341,21 @@ pub fn ddl(self: *Self, allocator: Allocator) ![:0]const u8 {
         "{}",
         .{self.ctx.schema.sqliteDdlFormatter(self.ctx.vtabName())},
     );
+}
+
+pub fn rename(self: *Self, cb_ctx: *vtab.CallbackContext, new_name: [:0]const u8) !void {
+    std.log.debug("renaming to {s}", .{new_name});
+    // TODO savepoint
+
+    try self.table_data.table().rename(cb_ctx.arena, new_name);
+    try self.pending_inserts.table().rename(cb_ctx.arena, new_name);
+    try self.row_group_index.table().rename(cb_ctx.arena, new_name);
+    try self.blob_manager.table().rename(cb_ctx.arena, new_name);
+    try self.schema_manager.table().rename(cb_ctx.arena, new_name);
+
+    // After a rename succeeds, the virtual table is disconnected, which means that other places
+    // that the name is stored (like in `ctx` or `blob_manager`) do not need to be updated.
+    return;
 }
 
 pub fn update(

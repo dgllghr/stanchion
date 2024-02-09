@@ -472,6 +472,25 @@ pub fn VirtualTable(comptime Table: type) type {
         }
     };
 
+    const Renamable = struct {
+        fn xRename(vtab: [*c]c.sqlite3_vtab, new_name: [*c]const u8) callconv(.C) c_int {
+            const state = @fieldParentPtr(State, "vtab", vtab);
+            var cb_ctx = state.cbCtx() catch {
+                std.log.err("error allocating arena for callback context. out of memory", .{});
+                return c.SQLITE_ERROR;
+            };
+            defer state.reclaimCbCtx(&cb_ctx);
+
+            const new_name_checked: [:0]const u8 = std.mem.span(new_name);
+            state.table.rename(&cb_ctx, new_name_checked) catch |e| {
+                std.log.err("error calling rename on table: {any}", .{e});
+                return c.SQLITE_ERROR;
+            };
+
+            return c.SQLITE_OK;
+        }
+    };
+
     const HasShadowTables = struct {
         fn xShadowName(name: [*c]const u8) callconv(.C) c_int {
             const n: [:0]const u8 = std.mem.span(name);
@@ -502,7 +521,7 @@ pub fn VirtualTable(comptime Table: type) type {
             .xCommit = if (tableHasDecl("commit")) Transactable.xCommit else null,
             .xRollback = if (tableHasDecl("rollback")) Transactable.xRollback else null,
             .xFindFunction = null,
-            .xRename = null,
+            .xRename = if (tableHasDecl("rename")) Renamable.xRename else null,
             .xSavepoint = if (tableHasDecl("savepoint")) Transactable.xSavepoint else null,
             .xRelease = if (tableHasDecl("release")) Transactable.xRelease else null,
             .xRollbackTo = if (tableHasDecl("rollbackTo")) Transactable.xRollbackTo else null,
