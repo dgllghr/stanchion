@@ -169,7 +169,7 @@ This is something that stanchion would like to support, but it may be difficult 
 
 A high level roadmap (only roughly ordered) of upcoming features:
 
-- [ ] Rename table
+- [X] Rename table
 - [ ] Optimize table
 - [ ] Concurrency safety and testing
 - [ ] More encodings: RLE, Dictionary, Chimp, etc.
