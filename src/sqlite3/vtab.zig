@@ -366,13 +366,20 @@ pub fn VirtualTable(comptime Table: type) type {
 
         fn xDestroy(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
             const state = @fieldParentPtr(State, "vtab", vtab);
-            var cb_ctx = state.cbCtx() catch {
-                std.log.err("error allocating arena for callback context. out of memory", .{});
-                return c.SQLITE_ERROR;
-            };
-            defer state.reclaimCbCtx(&cb_ctx);
 
-            state.table.destroy(&cb_ctx);
+            {
+                // Ensure the cb_ctx is reclaimed before the rest of the cleanup happens
+
+                var cb_ctx = state.cbCtx() catch {
+                    // TODO try to allocate error string with sqlite_malloc?
+                    std.log.err("error allocating arena for callback context. out of memory", .{});
+                    return c.SQLITE_ERROR;
+                };
+                defer state.reclaimCbCtx(&cb_ctx);
+
+                state.table.destroy(&cb_ctx);
+            }
+
             state.arena_pool.deinit();
             state.allocator.destroy(state);
 
