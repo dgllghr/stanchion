@@ -9,7 +9,6 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const sqlite = @import("../sqlite3.zig");
 const Conn = sqlite.Conn;
 const vtab = sqlite.vtab;
-const BestIndexError = vtab.BestIndexError;
 const BestIndexInfo = vtab.BestIndexInfo;
 const Result = vtab.Result;
 
@@ -60,7 +59,7 @@ pub fn bestIndex(
     _: *Self,
     _: *vtab.CallbackContext,
     best_index_info: vtab.BestIndexInfo,
-) BestIndexError!void {
+) !bool {
     // Find the equality constraint on `table_name`
     for (0..best_index_info.constraintsLen()) |idx| {
         const c = best_index_info.constraint(idx);
@@ -68,11 +67,11 @@ pub fn bestIndex(
         if (c.usable() and c.columnIndex() == 4 and c.op() == .eq) {
             c.setOmitTest(true);
             c.includeArgInFilter(1);
-            return;
+            return true;
         }
     }
 
-    return BestIndexError.QueryImpossible;
+    return false;
 }
 
 pub fn open(

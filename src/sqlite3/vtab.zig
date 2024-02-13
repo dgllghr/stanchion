@@ -4,6 +4,7 @@ const std = @import("std");
 const debug = std.debug;
 const fmt = std.fmt;
 const heap = std.heap;
+const log = std.log;
 const mem = std.mem;
 const meta = std.meta;
 const testing = std.testing;
@@ -16,11 +17,11 @@ const Conn = @import("Conn.zig");
 const ValueRef = @import("value.zig").Ref;
 
 /// CallbackContext is only valid for the duration of a callback from sqlite into the
-/// virtual table instance. It should no tbe saved between calls, and it is provided to
+/// virtual table instance. It should not be saved between calls, and it is provided to
 /// every callback function.
 pub const CallbackContext = struct {
     arena: *heap.ArenaAllocator,
-    error_message: []const u8 = "unknown error",
+    error_message: []const u8 = "unspecified error",
 
     pub fn init(arena: *heap.ArenaAllocator) CallbackContext {
         return .{ .arena = arena };
@@ -37,6 +38,35 @@ pub const CallbackContext = struct {
             values,
         ) catch |err| switch (err) {
             error.OutOfMemory => "can't set diagnostic message, out of memory",
+        };
+    }
+
+    pub fn captureErrMsg(
+        self: *CallbackContext,
+        err: anytype,
+        comptime format_string: []const u8,
+        values: anytype,
+    ) @TypeOf(err) {
+        switch (comptime meta.activeTag(@typeInfo(@TypeOf(err)))) {
+            .ErrorSet => {
+                self.setErrorMessage(format_string ++ ": {!}", values ++ .{err});
+                return err;
+            },
+            else => @compileError("`err` must be an ErrorSet"),
+        }
+    }
+
+    pub fn wrapErrorMessage(
+        self: *CallbackContext,
+        comptime error_context_msg: []const u8,
+        values: anytype,
+    ) void {
+        self.error_message = fmt.allocPrint(
+            self.arena.allocator(),
+            error_context_msg ++ ": {s}",
+            values ++ .{self.error_message},
+        ) catch |err| switch (err) {
+            error.OutOfMemory => self.error_message,
         };
     }
 };
@@ -83,8 +113,6 @@ const ArenaPool = struct {
         self.arenas.append(node);
     }
 };
-
-pub const BestIndexError = error{QueryImpossible};
 
 pub const BestIndexInfo = struct {
     index_info: ?*c.sqlite3_index_info,
@@ -282,6 +310,15 @@ pub fn VirtualTable(comptime Table: type) type {
         fn reclaimCbCtx(self: *@This(), cb_ctx: *CallbackContext) void {
             self.arena_pool.giveBack(cb_ctx.arena);
         }
+
+        fn setErrorMsg(self: *@This(), err_msg: []const u8) void {
+            // Any existing error message must be freed before a new one is set
+            // See: https://www.sqlite.org/vtab.html#implementation
+            if (self.vtab.zErrMsg != null) {
+                c.sqlite3_free(self.vtab.zErrMsg);
+            }
+            self.vtab.zErrMsg = dupeToSQLiteString(err_msg);
+        }
     };
 
     const CursorState = struct {
@@ -289,6 +326,10 @@ pub fn VirtualTable(comptime Table: type) type {
         allocator: mem.Allocator,
         arena_pool: *ArenaPool,
         cursor: Table.Cursor,
+
+        fn vtabState(self: @This()) *State {
+            return @fieldParentPtr(State, "vtab", self.vtab_cursor.pVtab);
+        }
 
         fn cbCtx(self: *@This()) !CallbackContext {
             const arena = try self.arena_pool.take(self.allocator);
@@ -343,8 +384,8 @@ pub fn VirtualTable(comptime Table: type) type {
             };
             defer state.reclaimCbCtx(&cb_ctx);
 
-            const initTableFn = Table.create;
-            initTableFn(&state.table, allocator, conn, &cb_ctx, args) catch {
+            Table.create(&state.table, allocator, conn, &cb_ctx, args) catch {
+                cb_ctx.wrapErrorMessage("failed to create virtual table `{s}`", .{args[2]});
                 err_str.* = dupeToSQLiteString(cb_ctx.error_message);
                 return c.SQLITE_ERROR;
             };
@@ -371,8 +412,9 @@ pub fn VirtualTable(comptime Table: type) type {
                 // Ensure the cb_ctx is reclaimed before the rest of the cleanup happens
 
                 var cb_ctx = state.cbCtx() catch {
-                    // TODO try to allocate error string with sqlite_malloc?
-                    std.log.err("error allocating arena for callback context. out of memory", .{});
+                    state.setErrorMsg(
+                        "failed to allocate arena for callback context. out of memory",
+                    );
                     return c.SQLITE_ERROR;
                 };
                 defer state.reclaimCbCtx(&cb_ctx);
@@ -398,7 +440,7 @@ pub fn VirtualTable(comptime Table: type) type {
         ) callconv(.C) c_int {
             const state = @fieldParentPtr(State, "vtab", vtab);
             var cb_ctx = state.cbCtx() catch {
-                std.log.err("error allocating arena for callback context. out of memory", .{});
+                state.setErrorMsg("failed to allocate arena for callback context. out of memory");
                 return c.SQLITE_ERROR;
             };
             defer state.reclaimCbCtx(&cb_ctx);
@@ -406,10 +448,9 @@ pub fn VirtualTable(comptime Table: type) type {
             const values = ChangeSet.init(
                 @as([*c]?*c.sqlite3_value, @ptrCast(argv))[0..@intCast(argc)],
             );
-            state.table.update(&cb_ctx, @ptrCast(row_id_ptr), values) catch |e| {
-                std.log.err("error calling update on vtab: {any}", .{e});
-                // TODO how to set the error message?
-                //err_str.* = dupeToSQLiteString(cb_ctx.error_message);
+            state.table.update(&cb_ctx, @ptrCast(row_id_ptr), values) catch {
+                cb_ctx.wrapErrorMessage("{s} failed", .{values.changeType().name()});
+                state.setErrorMsg(cb_ctx.error_message);
                 return c.SQLITE_ERROR;
             };
 
@@ -422,29 +463,29 @@ pub fn VirtualTable(comptime Table: type) type {
         //! transactions
 
         fn xBegin(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
-            return callTableCallback("begin", Table.begin, .{}, vtab);
+            return callTableCallback("BEGIN", Table.begin, .{}, vtab);
         }
 
         fn xSync(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
-            return callTableCallback("sync", Table.sync, .{}, vtab);
+            return callTableCallback("SYNC", Table.sync, .{}, vtab);
         }
 
         fn xCommit(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
-            return callTableCallback("commit", Table.commit, .{}, vtab);
+            return callTableCallback("COMMIT", Table.commit, .{}, vtab);
         }
 
         fn xRollback(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
-            return callTableCallback("rollback", Table.rollback, .{}, vtab);
+            return callTableCallback("ROLLBACK", Table.rollback, .{}, vtab);
         }
 
         fn xSavepoint(vtab: [*c]c.sqlite3_vtab, savepoint_id: c_int) callconv(.C) c_int {
             const sid: i32 = @intCast(savepoint_id);
-            return callTableCallback("savepoint", Table.savepoint, .{sid}, vtab);
+            return callTableCallback("SAVEPOINT", Table.savepoint, .{sid}, vtab);
         }
 
         fn xRelease(vtab: [*c]c.sqlite3_vtab, savepoint_id: c_int) callconv(.C) c_int {
             const sid: i32 = @intCast(savepoint_id);
-            return callTableCallback("release", Table.release, .{sid}, vtab);
+            return callTableCallback("RELEASE", Table.release, .{sid}, vtab);
         }
 
         fn xRollbackTo(
@@ -452,26 +493,27 @@ pub fn VirtualTable(comptime Table: type) type {
             savepoint_id: c_int,
         ) callconv(.C) c_int {
             const sid: i32 = @intCast(savepoint_id);
-            return callTableCallback("rollbackTo", Table.rollbackTo, .{sid}, vtab);
+            return callTableCallback("ROLLBACK TO", Table.rollbackTo, .{sid}, vtab);
         }
 
         fn callTableCallback(
-            comptime functionName: []const u8,
+            comptime op_name: []const u8,
             comptime function: anytype,
             args: anytype,
             vtab: [*c]c.sqlite3_vtab,
         ) c_int {
             const state = @fieldParentPtr(State, "vtab", vtab);
             var cb_ctx = state.cbCtx() catch {
-                std.log.err("error allocating arena for callback context. out of memory", .{});
+                state.setErrorMsg("failed to allocate arena for callback context. out of memory");
                 return c.SQLITE_ERROR;
             };
             defer state.reclaimCbCtx(&cb_ctx);
 
             const full_args = .{ &state.table, &cb_ctx } ++ args;
 
-            @call(.auto, function, full_args) catch |e| {
-                std.log.err("error calling {s} on table: {any}", .{ functionName, e });
+            @call(.auto, function, full_args) catch {
+                cb_ctx.wrapErrorMessage(op_name ++ " failed", .{});
+                state.setErrorMsg(cb_ctx.error_message);
                 return c.SQLITE_ERROR;
             };
 
@@ -483,14 +525,15 @@ pub fn VirtualTable(comptime Table: type) type {
         fn xRename(vtab: [*c]c.sqlite3_vtab, new_name: [*c]const u8) callconv(.C) c_int {
             const state = @fieldParentPtr(State, "vtab", vtab);
             var cb_ctx = state.cbCtx() catch {
-                std.log.err("error allocating arena for callback context. out of memory", .{});
+                state.setErrorMsg("failed to allocate arena for callback context. out of memory");
                 return c.SQLITE_ERROR;
             };
             defer state.reclaimCbCtx(&cb_ctx);
 
             const new_name_checked: [:0]const u8 = std.mem.span(new_name);
-            state.table.rename(&cb_ctx, new_name_checked) catch |e| {
-                std.log.err("error calling rename on table: {any}", .{e});
+            state.table.rename(&cb_ctx, new_name_checked) catch {
+                cb_ctx.wrapErrorMessage("rename table to {s} failed", .{new_name_checked});
+                state.setErrorMsg(cb_ctx.error_message);
                 return c.SQLITE_ERROR;
             };
 
@@ -549,15 +592,14 @@ pub fn VirtualTable(comptime Table: type) type {
             return false;
         }
 
-        fn setup(
-            comptime create: bool,
+        fn xConnect(
             db: ?*c.sqlite3,
             module_context_ptr: ?*anyopaque,
             argc: c_int,
             argv: [*c]const [*c]const u8,
             vtab: [*c][*c]c.sqlite3_vtab,
             err_str: [*c][*c]const u8,
-        ) c_int {
+        ) callconv(.C) c_int {
             const allocator = getModuleAllocator(module_context_ptr).*;
 
             var tmp_arena = heap.ArenaAllocator.init(allocator);
@@ -590,12 +632,12 @@ pub fn VirtualTable(comptime Table: type) type {
             };
             defer state.reclaimCbCtx(&cb_ctx);
 
-            const initTableFn = if (create) Table.create else Table.connect;
-            initTableFn(&state.table, allocator, conn, &cb_ctx, args) catch {
+            Table.connect(&state.table, allocator, conn, &cb_ctx, args) catch {
+                cb_ctx.wrapErrorMessage("failed to connect to virtual table `{s}`", .{args[2]});
                 err_str.* = dupeToSQLiteString(cb_ctx.error_message);
                 return c.SQLITE_ERROR;
             };
-            errdefer if (create) state.table.destroy() else state.table.disconnect();
+            errdefer state.table.disconnect();
 
             const schema = state.table.ddl(cb_ctx.arena.allocator()) catch {
                 err_str.* = dupeToSQLiteString("out of memory");
@@ -611,17 +653,6 @@ pub fn VirtualTable(comptime Table: type) type {
             return c.SQLITE_OK;
         }
 
-        fn xConnect(
-            db: ?*c.sqlite3,
-            module_context_ptr: ?*anyopaque,
-            argc: c_int,
-            argv: [*c]const [*c]const u8,
-            vtab: [*c][*c]c.sqlite3_vtab,
-            err_str: [*c][*c]const u8,
-        ) callconv(.C) c_int {
-            return setup(false, db, module_context_ptr, argc, argv, vtab, err_str);
-        }
-
         fn xDisconnect(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
             const state = @fieldParentPtr(State, "vtab", vtab);
 
@@ -632,52 +663,28 @@ pub fn VirtualTable(comptime Table: type) type {
             return c.SQLITE_OK;
         }
 
-        fn xUpdate(
-            vtab: [*c]c.sqlite3_vtab,
-            argc: c_int,
-            argv: [*c]?*c.sqlite3_value,
-            row_id_ptr: [*c]c.sqlite3_int64,
-        ) callconv(.C) c_int {
-            const state = @fieldParentPtr(State, "vtab", vtab);
-            var cb_ctx = state.cbCtx() catch {
-                std.log.err("error allocating arena for callback context. out of memory", .{});
-                return c.SQLITE_ERROR;
-            };
-            defer state.reclaimCbCtx(&cb_ctx);
-
-            const values = ChangeSet.init(
-                @as([*c]?*c.sqlite3_value, @ptrCast(argv))[0..@intCast(argc)],
-            );
-            state.table.update(&cb_ctx, @ptrCast(row_id_ptr), values) catch |e| {
-                std.log.err("error calling update on vtab: {any}", .{e});
-                // TODO how to set the error message?
-                //err_str.* = dupeToSQLiteString(cb_ctx.error_message);
-                return c.SQLITE_ERROR;
-            };
-
-            return c.SQLITE_OK;
-        }
-
         fn xBestIndex(
             vtab: [*c]c.sqlite3_vtab,
             index_info_ptr: [*c]c.sqlite3_index_info,
         ) callconv(.C) c_int {
             const state = @fieldParentPtr(State, "vtab", vtab);
             var cb_ctx = state.cbCtx() catch {
-                std.log.err("error allocating arena for callback context. out of memory", .{});
+                state.setErrorMsg("failed to allocate arena for callback context. out of memory");
                 return c.SQLITE_ERROR;
             };
             defer state.reclaimCbCtx(&cb_ctx);
 
             const best_index = BestIndexInfo{ .index_info = @ptrCast(index_info_ptr) };
-            state.table.bestIndex(&cb_ctx, best_index) catch |e| {
-                if (e == BestIndexError.QueryImpossible) {
-                    std.log.debug("query not possible with specified constraints", .{});
-                    return c.SQLITE_CONSTRAINT;
-                }
-                std.log.err("error calling bestIndex on table: {any}", .{e});
+            const found_solution = state.table.bestIndex(&cb_ctx, best_index) catch {
+                cb_ctx.wrapErrorMessage("error occurred during query planning", .{});
+                state.setErrorMsg(cb_ctx.error_message);
                 return c.SQLITE_ERROR;
             };
+
+            if (!found_solution) {
+                log.debug("no query solution with specified constraints", .{});
+                return c.SQLITE_CONSTRAINT;
+            }
 
             return c.SQLITE_OK;
         }
@@ -688,25 +695,27 @@ pub fn VirtualTable(comptime Table: type) type {
         ) callconv(.C) c_int {
             const state = @fieldParentPtr(State, "vtab", vtab);
             var cb_ctx = state.cbCtx() catch {
-                std.log.err("error allocating arena for callback context. out of memory", .{});
+                state.setErrorMsg("failed to allocate arena for callback context. out of memory");
                 return c.SQLITE_ERROR;
             };
             defer state.reclaimCbCtx(&cb_ctx);
 
             const cursor_state = state.allocator.create(CursorState) catch {
-                std.log.err("out of memory", .{});
+                state.setErrorMsg("failed to allocate cursor: out of memory");
                 return c.SQLITE_ERROR;
             };
             errdefer state.allocator.destroy(cursor_state);
 
+            const cursor = state.table.open(&cb_ctx) catch {
+                cb_ctx.wrapErrorMessage("failed to create vtab cursor", .{});
+                state.setErrorMsg(cb_ctx.error_message);
+                return c.SQLITE_ERROR;
+            };
             cursor_state.* = .{
                 .vtab_cursor = mem.zeroes(c.sqlite3_vtab_cursor),
                 .allocator = state.allocator,
                 .arena_pool = &state.arena_pool,
-                .cursor = state.table.open(&cb_ctx) catch |e| {
-                    std.log.err("error creating cursor: {any}", .{e});
-                    return c.SQLITE_ERROR;
-                },
+                .cursor = cursor,
             };
 
             vtab_cursor.* = @ptrCast(cursor_state);
@@ -727,13 +736,16 @@ pub fn VirtualTable(comptime Table: type) type {
 
             const state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
             var cb_ctx = state.cbCtx() catch {
-                std.log.err("error allocating arena for callback context. out of memory", .{});
+                state.vtabState().setErrorMsg(
+                    "failed to allocate arena for callback context. out of memory",
+                );
                 return c.SQLITE_ERROR;
             };
             defer state.reclaimCbCtx(&cb_ctx);
 
-            state.cursor.begin(&cb_ctx, index_id_num, index_id_str, filter_args) catch |e| {
-                std.log.err("error calling begin (xFilter) on cursor: {any}", .{e});
+            state.cursor.begin(&cb_ctx, index_id_num, index_id_str, filter_args) catch {
+                cb_ctx.wrapErrorMessage("failed to init vtab cursor with filter", .{});
+                state.vtabState().setErrorMsg(cb_ctx.error_message);
                 return c.SQLITE_ERROR;
             };
 
@@ -747,8 +759,8 @@ pub fn VirtualTable(comptime Table: type) type {
 
         fn xNext(vtab_cursor: [*c]c.sqlite3_vtab_cursor) callconv(.C) c_int {
             const state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
-            state.cursor.next() catch |e| {
-                std.log.err("error calling next on cursor: {any}", .{e});
+            state.cursor.next() catch {
+                state.vtabState().setErrorMsg("error in next on vtab cursor");
                 return c.SQLITE_ERROR;
             };
             return c.SQLITE_OK;
@@ -761,8 +773,8 @@ pub fn VirtualTable(comptime Table: type) type {
         ) callconv(.C) c_int {
             const state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
             const result = Result{ .ctx = ctx };
-            state.cursor.column(result, @intCast(n)) catch |e| {
-                std.log.err("error calling column on cursor: {any}", .{e});
+            state.cursor.column(result, @intCast(n)) catch {
+                state.vtabState().setErrorMsg("error fetching column value from vtab cursor");
                 return c.SQLITE_ERROR;
             };
             return c.SQLITE_OK;
@@ -773,8 +785,8 @@ pub fn VirtualTable(comptime Table: type) type {
             rowid_ptr: [*c]c.sqlite3_int64,
         ) callconv(.C) c_int {
             const state = @fieldParentPtr(CursorState, "vtab_cursor", vtab_cursor);
-            rowid_ptr.* = state.cursor.rowid() catch |e| {
-                std.log.err("error calling rowid on cursor: {any}", .{e});
+            rowid_ptr.* = state.cursor.rowid() catch {
+                state.vtabState().setErrorMsg("error fetching rowid value from vtab cursor");
                 return c.SQLITE_ERROR;
             };
             return c.SQLITE_OK;
@@ -808,9 +820,18 @@ fn parseModuleArguments(
     return res;
 }
 
-fn dupeToSQLiteString(s: []const u8) [*c]const u8 {
+fn dupeToSQLiteString(s: []const u8) [*c]u8 {
     const len: c_int = @intCast(s.len);
     var buffer: [*c]u8 = @ptrCast(c.sqlite3_malloc(len + 1));
+
+    // sqlite3_malloc returns a null pointer if it can't allocate the memory
+    if (buffer == null) {
+        log.err(
+            "failed to alloc diagnostic message in sqlite: out of memory. original message: {s}",
+            .{s},
+        );
+        return null;
+    }
 
     @memcpy(buffer[0..s.len], s);
     buffer[s.len] = 0;

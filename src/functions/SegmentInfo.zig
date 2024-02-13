@@ -9,7 +9,6 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const sqlite = @import("../sqlite3.zig");
 const Conn = sqlite.Conn;
 const vtab = sqlite.vtab;
-const BestIndexError = vtab.BestIndexError;
 const BestIndexInfo = vtab.BestIndexInfo;
 const Result = vtab.Result;
 
@@ -69,7 +68,7 @@ pub fn bestIndex(
     _: *Self,
     _: *vtab.CallbackContext,
     best_index_info: vtab.BestIndexInfo,
-) BestIndexError!void {
+) !bool {
     var req_constraints: struct { table_name: bool, segment_id: bool } = .{
         .table_name = false,
         .segment_id = false,
@@ -94,9 +93,9 @@ pub fn bestIndex(
     }
 
     if (req_constraints.table_name and req_constraints.segment_id) {
-        return;
+        return true;
     }
-    return BestIndexError.QueryImpossible;
+    return false;
 }
 
 pub fn open(

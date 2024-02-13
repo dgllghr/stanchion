@@ -11,6 +11,14 @@ pub const ChangeType = enum {
     Insert,
     Update,
     Delete,
+
+    pub fn name(self: ChangeType) []const u8 {
+        return switch (self) {
+            .Insert => "INSERT",
+            .Update => "UPDATE",
+            .Delete => "DELETE",
+        };
+    }
 };
 
 pub fn init(values: []?*c.sqlite3_value) Self {

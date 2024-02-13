@@ -69,7 +69,11 @@ const Self = @This();
 
 /// Initializes the row group cursor with an undefined row group. Set the row group before
 /// iterating
-pub fn init(allocator: Allocator, blob_manager: *BlobManager, schema: *const Schema) !Self {
+pub fn init(
+    allocator: Allocator,
+    blob_manager: *BlobManager,
+    schema: *const Schema,
+) Allocator.Error!Self {
     const col_len = schema.columns.len;
 
     var arena = ArenaAllocator.init(allocator);
