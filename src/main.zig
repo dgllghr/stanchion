@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log;
 const Allocator = std.mem.Allocator;
 const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator;
 
@@ -35,6 +36,30 @@ pub export fn sqlite3_stanchion_init(
         return c.SQLITE_ERROR;
     }
 
+    // Register virtual tables and functions for this connection
+    var res = register(db, err_msg, api);
+    if (res != c.SQLITE_OK) {
+        return res;
+    }
+
+    // Automatically register virtual tables and functions on all future connections to this db
+    res = c.sqlite3_auto_extension(
+        @as(?*const fn () callconv(.C) void, @ptrCast(&register)),
+    );
+    if (res != c.SQLITE_OK) {
+        return res;
+    }
+
+    // Must be a persistent extension to be an auto extension
+    return c.SQLITE_OK_LOAD_PERMANENTLY;
+}
+
+fn register(
+    db: *c.sqlite3,
+    err_msg: [*c][*c]u8,
+    api: *c.sqlite3_api_routines,
+) callconv(.C) c_int {
+    _ = api;
     // To store data common to all table instances (global to the module), replace this allocator
     // with a struct containing the common data (see `ModuleContext` in `zig-sqlite`)
     allocator = GeneralPurposeAllocator(.{}){};
@@ -80,6 +105,16 @@ pub export fn sqlite3_stanchion_init(
 
 fn setErrorMsg(err_msg: [*c][*c]u8, msg_text: []const u8) void {
     const msg_buf: [*c]u8 = @ptrCast(c.sqlite3_malloc(@intCast(msg_text.len)));
+
+    // sqlite3_malloc returns a null pointer if it can't allocate the memory
+    if (msg_buf == null) {
+        log.err(
+            "failed to alloc diagnostic message in sqlite: out of memory. original message: {s}",
+            .{msg_text},
+        );
+        return;
+    }
+
     @memcpy(msg_buf[0..msg_text.len], msg_text);
     err_msg.* = msg_buf;
 }
