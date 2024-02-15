@@ -615,15 +615,15 @@ test "row group: create single from pending inserts" {
     var row_group_index = Index.init(&ctx);
     defer row_group_index.deinit();
     try row_group_index.table().create(&arena);
-    var pending_inserts = try PendingInserts.init(arena.allocator(), &arena, &ctx, &table_data);
+    var pending_inserts = try PendingInserts.init(arena.allocator(), &ctx);
     errdefer pending_inserts.deinit();
     try pending_inserts.table().create(&arena);
 
     const table_values = datasets.planets.fixed_data[0..4];
     const rowids = [_]i64{ 1, 2, 4, 3 };
 
-    for (table_values) |*row| {
-        _ = try pending_inserts.insert(&arena, MemoryTuple{ .values = row });
+    for (table_values, 1..) |*row, rowid| {
+        _ = try pending_inserts.insert(&arena, @intCast(rowid), MemoryTuple{ .values = row });
     }
 
     var new_row_group: Self.NewRowGroup = undefined;
@@ -698,15 +698,15 @@ test "row group: create all" {
     var row_group_index = Index.init(&ctx);
     defer row_group_index.deinit();
     try row_group_index.table().create(&arena);
-    var pending_inserts = try PendingInserts.init(arena.allocator(), &arena, &ctx, &table_data);
+    var pending_inserts = try PendingInserts.init(arena.allocator(), &ctx);
     errdefer pending_inserts.deinit();
     try pending_inserts.table().create(&arena);
 
     const table_values = datasets.planets.fixed_data[0..4];
     const rowids = [_]i64{ 1, 2, 4, 3 };
 
-    for (table_values) |*row| {
-        _ = try pending_inserts.insert(&arena, MemoryTuple{ .values = row });
+    for (table_values, 1..) |*row, rowid| {
+        _ = try pending_inserts.insert(&arena, @intCast(rowid), MemoryTuple{ .values = row });
     }
 
     {
@@ -776,7 +776,7 @@ pub fn benchRowGroupCreate() !void {
     var row_group_index = Index.init(&ctx);
     defer row_group_index.deinit();
     try row_group_index.table().create(&arena);
-    var pending_inserts = try PendingInserts.init(arena.allocator(), &arena, &ctx, &table_data);
+    var pending_inserts = try PendingInserts.init(arena.allocator(), &ctx);
     errdefer pending_inserts.deinit();
     try pending_inserts.table().create(&arena);
 
@@ -785,11 +785,14 @@ pub fn benchRowGroupCreate() !void {
 
     // Create a row group from pending inserts only (no merge)
 
+    var rowid: i64 = 1;
+
     try conn.exec("BEGIN");
     const start_insert = std.time.microTimestamp();
     for (0..row_group_len) |_| {
         var row = datasets.planets.randomRecord(&prng);
-        _ = try pending_inserts.insert(&arena, MemoryTuple{ .values = &row });
+        _ = try pending_inserts.insert(&arena, @intCast(rowid), MemoryTuple{ .values = &row });
+        rowid += 1;
     }
     try conn.exec("COMMIT");
     const end_insert = std.time.microTimestamp();
@@ -826,7 +829,8 @@ pub fn benchRowGroupCreate() !void {
     try conn.exec("BEGIN");
     for (0..(row_group_len * 3)) |_| {
         var row = datasets.planets.randomRecord(&prng);
-        _ = try pending_inserts.insert(&arena, MemoryTuple{ .values = &row });
+        _ = try pending_inserts.insert(&arena, rowid, MemoryTuple{ .values = &row });
+        rowid += 1;
     }
     try conn.exec("COMMIT");
 

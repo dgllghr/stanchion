@@ -28,9 +28,6 @@ const SortKeyRange = index_mod.SortKeyRange;
 
 ctx: *const VtabCtx,
 
-table_data: *TableData,
-next_rowid: i64,
-
 insert_stmt: StmtCell,
 cursor_from_start: StmtPool,
 cursor_from_key: StmtPool,
@@ -42,29 +39,15 @@ const Self = @This();
 const StmtCell = prep_stmt.Cell(VtabCtx);
 const StmtPool = prep_stmt.Pool(VtabCtx);
 
-pub fn init(
-    allocator: Allocator,
-    tmp_arena: *ArenaAllocator,
-    ctx: *const VtabCtx,
-    table_data: *TableData,
-) !Self {
-    var self = Self{
+pub fn init(allocator: Allocator, ctx: *const VtabCtx) !Self {
+    return Self{
         .ctx = ctx,
-        .table_data = table_data,
-        .next_rowid = 1,
         .insert_stmt = StmtCell.init(&insertDml),
         .cursor_from_start = StmtPool.init(allocator, &cursorFromStartQuery),
         .cursor_from_key = StmtPool.init(allocator, &cursorFromKeyQuery),
         .delete_from = StmtCell.init(&deleteFromQuery),
         .delete_range = StmtCell.init(&deleteRangeQuery),
     };
-
-    // Initialize the rowid to the proper value if the table exists
-    if (try self.table().checkExists(tmp_arena)) {
-        try self.loadNextRowid(tmp_arena);
-    }
-
-    return self;
 }
 
 pub fn deinit(self: *Self) void {
@@ -143,10 +126,7 @@ pub fn table(self: Self) ShadowTable {
     return .{ .ctx = self.ctx };
 }
 
-pub fn insert(self: *Self, tmp_arena: *ArenaAllocator, values: anytype) !i64 {
-    const rowid = self.next_rowid;
-    self.next_rowid += 1;
-
+pub fn insert(self: *Self, tmp_arena: *ArenaAllocator, rowid: i64, values: anytype) !void {
     const stmt = try self.insert_stmt.acquire(tmp_arena, self.ctx.*);
     defer self.insert_stmt.release();
 
@@ -157,8 +137,6 @@ pub fn insert(self: *Self, tmp_arena: *ArenaAllocator, values: anytype) !i64 {
     }
 
     try stmt.exec();
-
-    return rowid;
 }
 
 fn insertDml(ctx: VtabCtx, arena: *ArenaAllocator) ![]const u8 {
@@ -191,14 +169,6 @@ test "pending inserts: insert dml" {
     ;
     const result = try insertDml(ctx, &arena);
     try testing.expectEqualSlices(u8, expected, result);
-}
-
-pub fn persistNextRowid(self: *Self, tmp_arena: *ArenaAllocator) !void {
-    try self.table_data.writeInt(tmp_arena, .next_rowid, self.next_rowid);
-}
-
-pub fn loadNextRowid(self: *Self, tmp_arena: *ArenaAllocator) !void {
-    self.next_rowid = (try self.table_data.readInt(tmp_arena, .next_rowid)) orelse 1;
 }
 
 pub const Cursor = struct {

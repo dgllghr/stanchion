@@ -55,7 +55,15 @@ pending_inserts: PendingInserts,
 
 row_group_creator: RowGroupCreator,
 
-dirty: bool,
+/// In order to synchronize `next_rowid` across multiple connections to the same sqlite database,
+/// it is loaded from the table data when the first insert in a transaction occurs. This is safe
+/// because only one write transaction can be active in a sqlite database at a time. The in memory
+/// value of `next_rowid` is incremented and used as additional inserts happen within a transaction
+/// so that rowid generation is fast for subsequent inserts. When the transaction is about to
+/// commit, `next_rowid` is persisted to the table data and cleared from memory. This process
+/// allows `next_rowid` to be used as a "dirty" flag to see if any writes occurred in a
+/// transaction.
+next_rowid: ?i64,
 warned_update_delete_not_supported: bool = false,
 
 pub const InitError = error{
@@ -138,12 +146,7 @@ pub fn create(
         );
     };
 
-    self.pending_inserts = PendingInserts.init(
-        allocator,
-        cb_ctx.arena,
-        &self.ctx,
-        &self.table_data,
-    ) catch |e| {
+    self.pending_inserts = PendingInserts.init(allocator, &self.ctx) catch |e| {
         return cb_ctx.captureErrMsg(e, "failed to init pending inserts", .{});
     };
     errdefer self.pending_inserts.deinit();
@@ -167,7 +170,7 @@ pub fn create(
         return cb_ctx.captureErrMsg(e, "failed to init row group creator", .{});
     };
 
-    self.dirty = false;
+    self.next_rowid = null;
 }
 
 test "create table" {
@@ -253,12 +256,7 @@ pub fn connect(
         return cb_ctx.captureErrMsg(e, "`{s}_rowgroupindex` shadow table does not exist", .{name});
     };
 
-    self.pending_inserts = PendingInserts.init(
-        allocator,
-        cb_ctx.arena,
-        &self.ctx,
-        &self.table_data,
-    ) catch |e| {
+    self.pending_inserts = PendingInserts.init(allocator, &self.ctx) catch |e| {
         return cb_ctx.captureErrMsg(e, "failed to init pending inserts", .{});
     };
     errdefer self.pending_inserts.deinit();
@@ -282,7 +280,7 @@ pub fn connect(
         return cb_ctx.captureErrMsg(e, "failed to init row group creator", .{});
     };
 
-    self.dirty = false;
+    self.next_rowid = null;
 }
 
 pub fn disconnect(self: *Self) void {
@@ -358,27 +356,6 @@ pub fn rename(self: *Self, cb_ctx: *vtab.CallbackContext, new_name: [:0]const u8
     return;
 }
 
-pub fn update(
-    self: *Self,
-    cb_ctx: *vtab.CallbackContext,
-    rowid: *i64,
-    change_set: ChangeSet,
-) !void {
-    const change_type = change_set.changeType();
-    if (change_type == .Insert) {
-        rowid.* = self.pending_inserts.insert(cb_ctx.arena, change_set) catch |e| {
-            return cb_ctx.captureErrMsg(e, "error inserting into pending inserts", .{});
-        };
-        self.dirty = true;
-        return;
-    }
-
-    if (!self.warned_update_delete_not_supported) {
-        log.warn("stanchion tables do not (yet) support UPDATE or DELETE", .{});
-        self.warned_update_delete_not_supported = true;
-    }
-}
-
 pub fn bestIndex(
     self: *Self,
     cb_ctx: *vtab.CallbackContext,
@@ -391,30 +368,56 @@ pub fn bestIndex(
     return true;
 }
 
+pub fn update(
+    self: *Self,
+    cb_ctx: *vtab.CallbackContext,
+    rowid: *i64,
+    change_set: ChangeSet,
+) !void {
+    const change_type = change_set.changeType();
+    if (change_type == .Insert) {
+        if (self.next_rowid == null) {
+            self.loadNextRowid(cb_ctx.arena) catch |e| {
+                return cb_ctx.captureErrMsg(e, "error loading the next rowid", .{});
+            };
+        }
+        rowid.* = self.next_rowid.?;
+        self.next_rowid.? += 1;
+
+        self.pending_inserts.insert(cb_ctx.arena, rowid.*, change_set) catch |e| {
+            return cb_ctx.captureErrMsg(e, "error inserting into pending inserts", .{});
+        };
+
+        return;
+    }
+
+    if (!self.warned_update_delete_not_supported) {
+        log.warn("stanchion tables do not (yet) support UPDATE or DELETE", .{});
+        self.warned_update_delete_not_supported = true;
+    }
+}
+
 pub fn begin(_: *Self, _: *vtab.CallbackContext) !void {
     log.debug("txn begin", .{});
 }
 
 pub fn sync(self: *Self, cb_ctx: *vtab.CallbackContext) !void {
-    _ = cb_ctx;
-    _ = self;
-}
-
-pub fn commit(self: *Self, cb_ctx: *vtab.CallbackContext) !void {
-    log.debug("txn commit", .{});
-    if (self.dirty) {
-        try self.pending_inserts.persistNextRowid(cb_ctx.arena);
-        // TODO should this be called in sync so that an error causes the transaction to be
-        //      aborted?
+    if (self.next_rowid) |_| {
         try self.row_group_creator.createAll(cb_ctx.arena);
-        self.dirty = false;
+        try self.unloadNextRowid(cb_ctx.arena);
     }
 }
 
-pub fn rollback(self: *Self, cb_ctx: *vtab.CallbackContext) !void {
+pub fn commit(self: *Self, cb_ctx: *vtab.CallbackContext) !void {
+    _ = cb_ctx;
+    _ = self;
+    log.debug("txn commit", .{});
+}
+
+pub fn rollback(self: *Self, _: *vtab.CallbackContext) !void {
     log.debug("txn rollback", .{});
-    if (self.dirty) {
-        try self.pending_inserts.loadNextRowid(cb_ctx.arena);
+    if (self.next_rowid) |_| {
+        self.clearNextRowid();
     }
 }
 
@@ -424,16 +427,32 @@ pub fn savepoint(_: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !void {
 
 pub fn release(self: *Self, cb_ctx: *vtab.CallbackContext, savepoint_id: i32) !void {
     log.debug("txn savepoint {d} release", .{savepoint_id});
-    if (self.dirty) {
-        try self.pending_inserts.persistNextRowid(cb_ctx.arena);
+    if (self.next_rowid) |_| {
+        // TODO Is this necessary? Releasing the savepoint does not end the transaction so I don't
+        //      think it is necessary to persist and clear the next rowid.
+        try self.unloadNextRowid(cb_ctx.arena);
     }
 }
 
-pub fn rollbackTo(self: *Self, cb_ctx: *vtab.CallbackContext, savepoint_id: i32) !void {
+pub fn rollbackTo(self: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !void {
     log.debug("txn savepoint {d} rollback", .{savepoint_id});
-    if (self.dirty) {
-        try self.pending_inserts.loadNextRowid(cb_ctx.arena);
+    if (self.next_rowid) |_| {
+        self.clearNextRowid();
     }
+}
+
+fn loadNextRowid(self: *Self, tmp_arena: *ArenaAllocator) !void {
+    self.next_rowid = (try self.table_data.readInt(tmp_arena, .next_rowid)) orelse 1;
+}
+
+/// Persists the next rowid and removes it from memory
+fn unloadNextRowid(self: *Self, tmp_arena: *ArenaAllocator) !void {
+    try self.table_data.writeInt(tmp_arena, .next_rowid, self.next_rowid.?);
+    self.next_rowid = null;
+}
+
+fn clearNextRowid(self: *Self) void {
+    self.next_rowid = null;
 }
 
 pub fn isShadowName(suffix: [:0]const u8) bool {

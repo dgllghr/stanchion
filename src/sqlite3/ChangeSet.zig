@@ -35,12 +35,6 @@ pub fn changeType(self: Self) ChangeType {
     return .Update;
 }
 
-pub fn readRowid(self: Self) ValueRef {
-    return .{
-        .value = self.values[1],
-    };
-}
-
 /// Number of values in this change set (not including rowid). Should not be called when
 /// change type is `.Delete`
 pub fn valuesLen(self: Self) usize {
