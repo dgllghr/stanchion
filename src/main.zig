@@ -31,6 +31,10 @@ pub export fn sqlite3_stanchion_init(
 ) callconv(.C) c_int {
     c.sqlite3_api = api;
 
+    // To store data common to all table instances (global to the module), replace this allocator
+    // with a struct containing the common data (see `ModuleContext` in `zig-sqlite`)
+    allocator = GeneralPurposeAllocator(.{}){};
+
     if (sqliteVersion() < min_sqlite_version) {
         setErrorMsg(err_msg, "stanchion requires sqlite version >= 3.26.0");
         return c.SQLITE_ERROR;
@@ -60,9 +64,6 @@ fn register(
     api: *c.sqlite3_api_routines,
 ) callconv(.C) c_int {
     _ = api;
-    // To store data common to all table instances (global to the module), replace this allocator
-    // with a struct containing the common data (see `ModuleContext` in `zig-sqlite`)
-    allocator = GeneralPurposeAllocator(.{}){};
 
     var res = c.sqlite3_create_module_v2(
         db,
