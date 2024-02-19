@@ -413,9 +413,7 @@ pub fn sync(self: *Self, cb_ctx: *vtab.CallbackContext) !void {
     }
 }
 
-pub fn commit(self: *Self, cb_ctx: *vtab.CallbackContext) !void {
-    _ = cb_ctx;
-    _ = self;
+pub fn commit(_: *Self, _: *vtab.CallbackContext) void {
     log.debug("txn commit", .{});
 }
 
@@ -430,14 +428,10 @@ pub fn savepoint(_: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !void {
     log.debug("txn savepoint {d} begin", .{savepoint_id});
 }
 
-pub fn release(self: *Self, cb_ctx: *vtab.CallbackContext, savepoint_id: i32) !void {
+pub fn release(_: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !void {
     log.debug("txn savepoint {d} release", .{savepoint_id});
-    if (self.next_rowid) |_| {
-        // TODO Is this necessary? Releasing the savepoint does not end the transaction so I don't
-        //      think it is necessary to persist and clear the next rowid. Also, if sync is called
-        //      immediately after, row groups will not be created
-        try self.unloadNextRowid(cb_ctx.arena);
-    }
+    // Nothing needs to be done here because SQLite will always call xSync+xCommit at the end of
+    // a transaction, whether that transaction was started by a savepoint or not.
 }
 
 pub fn rollbackTo(self: *Self, _: *vtab.CallbackContext, savepoint_id: i32) !void {

@@ -463,29 +463,55 @@ pub fn VirtualTable(comptime Table: type) type {
         //! transactions
 
         fn xBegin(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
-            return callTableCallback("BEGIN", Table.begin, .{}, vtab);
+            return callTxnCallback("BEGIN", Table.begin, .{}, vtab);
         }
 
         fn xSync(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
-            return callTableCallback("SYNC", Table.sync, .{}, vtab);
+            const state = @fieldParentPtr(State, "vtab", vtab);
+            var cb_ctx = state.cbCtx() catch {
+                state.setErrorMsg("failed to allocate arena for callback context. out of memory");
+                return c.SQLITE_ERROR;
+            };
+            defer state.reclaimCbCtx(&cb_ctx);
+
+            state.table.sync(&cb_ctx) catch {
+                // There is no point in psasing the error message to SQLite because it does not
+                // appear that the message is sent to the client. Log the error instead.
+                log.err("SYNC failed: {s}", .{cb_ctx.error_message});
+                return c.SQLITE_ERROR;
+            };
+
+            return c.SQLITE_OK;
         }
 
         fn xCommit(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
-            return callTableCallback("COMMIT", Table.commit, .{}, vtab);
+            const state = @fieldParentPtr(State, "vtab", vtab);
+            var cb_ctx = state.cbCtx() catch {
+                state.setErrorMsg("failed to allocate arena for callback context. out of memory");
+                return c.SQLITE_ERROR;
+            };
+            defer state.reclaimCbCtx(&cb_ctx);
+
+            // The commit callback does not return an error because it appears that any error
+            // returned from `xCommit` is swallowed by SQLite (makes sense since that is the point
+            // of `xSync`). Use `xSync` to return an error and abort a transaction.
+            state.table.commit(&cb_ctx);
+
+            return c.SQLITE_OK;
         }
 
         fn xRollback(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
-            return callTableCallback("ROLLBACK", Table.rollback, .{}, vtab);
+            return callTxnCallback("ROLLBACK", Table.rollback, .{}, vtab);
         }
 
         fn xSavepoint(vtab: [*c]c.sqlite3_vtab, savepoint_id: c_int) callconv(.C) c_int {
             const sid: i32 = @intCast(savepoint_id);
-            return callTableCallback("SAVEPOINT", Table.savepoint, .{sid}, vtab);
+            return callTxnCallback("SAVEPOINT", Table.savepoint, .{sid}, vtab);
         }
 
         fn xRelease(vtab: [*c]c.sqlite3_vtab, savepoint_id: c_int) callconv(.C) c_int {
             const sid: i32 = @intCast(savepoint_id);
-            return callTableCallback("RELEASE", Table.release, .{sid}, vtab);
+            return callTxnCallback("RELEASE", Table.release, .{sid}, vtab);
         }
 
         fn xRollbackTo(
@@ -493,10 +519,10 @@ pub fn VirtualTable(comptime Table: type) type {
             savepoint_id: c_int,
         ) callconv(.C) c_int {
             const sid: i32 = @intCast(savepoint_id);
-            return callTableCallback("ROLLBACK TO", Table.rollbackTo, .{sid}, vtab);
+            return callTxnCallback("ROLLBACK TO", Table.rollbackTo, .{sid}, vtab);
         }
 
-        fn callTableCallback(
+        fn callTxnCallback(
             comptime op_name: []const u8,
             comptime function: anytype,
             args: anytype,
