@@ -402,9 +402,14 @@ pub fn begin(_: *Self, _: *vtab.CallbackContext) !void {
 }
 
 pub fn sync(self: *Self, cb_ctx: *vtab.CallbackContext) !void {
+    log.debug("txn sync", .{});
     if (self.next_rowid) |_| {
-        try self.row_group_creator.createAll(cb_ctx.arena);
-        try self.unloadNextRowid(cb_ctx.arena);
+        self.row_group_creator.createAll(cb_ctx.arena) catch |e| {
+            return cb_ctx.captureErrMsg(e, "failed to create row groups", .{});
+        };
+        self.unloadNextRowid(cb_ctx.arena) catch |e| {
+            return cb_ctx.captureErrMsg(e, "failed to persist next rowid", .{});
+        };
     }
 }
 
@@ -429,7 +434,8 @@ pub fn release(self: *Self, cb_ctx: *vtab.CallbackContext, savepoint_id: i32) !v
     log.debug("txn savepoint {d} release", .{savepoint_id});
     if (self.next_rowid) |_| {
         // TODO Is this necessary? Releasing the savepoint does not end the transaction so I don't
-        //      think it is necessary to persist and clear the next rowid.
+        //      think it is necessary to persist and clear the next rowid. Also, if sync is called
+        //      immediately after, row groups will not be created
         try self.unloadNextRowid(cb_ctx.arena);
     }
 }

@@ -92,6 +92,6 @@ fn writeDml(ctx: VtabCtxSchemaless, arena: *ArenaAllocator) ![]const u8 {
     return fmt.allocPrintZ(arena.allocator(),
         \\INSERT INTO "{s}_tabledata" (key, value)
         \\VALUES (?, ?)
-        \\ON CONFLICT DO UPDATE SET value = excluded.value
+        \\ON CONFLICT (key) DO UPDATE SET value = excluded.value
     , .{ctx.vtabName()});
 }
