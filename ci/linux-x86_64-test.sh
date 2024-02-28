@@ -48,47 +48,6 @@ rm ~/deps/zig-version-index.json
 PATH="$HOME/deps/zig:$PATH"
 zig version
 
-## Sqlite
-sqlite32bit=0
-if [ ! -f ~/deps/SQLITE32BIT ]; then
-    echo ">> Downloading and installing SQLite (${SQLITE_VERSION})"
-
-    rm -rf ~/deps/sqlite
-    mkdir ~/deps/sqlite
-
-    IFS='.' read -r maj min pat <<EOF
-$SQLITE_VERSION
-EOF
-    if [ ${#min} = 1 ]; then
-        min="0${min}"
-    fi
-    if [ ${#pat} = 1 ]; then
-        pat="0${pat}"
-    fi
-    versionstring="${maj}${min}${pat}00"
-
-    sqliteurl="https://www.sqlite.org/$SQLITE_YEAR/sqlite-tools-linux-x64-$versionstring.zip"
-    # See if it comes in 64 bit
-    wget -q --spider --tries 1 "$sqliteurl" || sqlite32bit=$?
-    if [ $sqlite32bit -ne 0 ]; then
-        # Use the 32 bit version
-        sqliteurl="https://www.sqlite.org/$SQLITE_YEAR/sqlite-tools-linux-x86-$versionstring.zip"
-    fi
-
-    wget -qO ~/deps/sqlite.zip "$sqliteurl"
-    unzip -j -d ~/deps/sqlite ~/deps/sqlite.zip
-
-    echo "$sqlite32bit" > ~/deps/SQLITE32BIT
-
-    rm ~/deps/sqlite.zip
-else
-    echo ">> Using cached SQLite"
-    sqlite32bit=$(cat ~/deps/SQLITE32BIT)
-fi
-
-PATH="$HOME/deps/sqlite:$PATH"
-sqlite3 --version
-
 ####
 ## Checks
 ####
@@ -97,15 +56,9 @@ sqlite3 --version
 zig fmt --check .
 
 ## Unit tests
-zig build test --summary all
+zig build test -Dsqlite-test-version=${SQLITE_VERSION} --summary all
 
 ## Integration tests
-if [ $sqlite32bit -ne 0 ]; then
-    echo ">> Running with x86 sqlite"
-    zig build itest --summary all -Dtarget=x86-linux
-else
-    echo ">> Running with x86_64 sqlite"
-    zig build itest --summary all
-fi
+zig build itest -Dsqlite-test-version=${SQLITE_VERSION} --summary all
 
 exit 0

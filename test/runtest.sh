@@ -2,6 +2,12 @@
 
 set -e
 
+# Arg is sqlite bin path to use
+sqlite3=$1
+stanchionlib=$2
+
+echo "$stanchionlib"
+
 # Account for differences between linux mktemp and macos mktemp programs
 testdir=$(mktemp -d 2>/dev/null || mktemp -d -t 'stanchion-itest')
 mkdir -p "$testdir/expected"
@@ -14,15 +20,15 @@ for test_name in $TESTS; do
     echo "RUNNING $test_name"
 
     # Generate the expected output
-    sqlite3 ":memory:" \
+    $sqlite3 ":memory:" \
         ".mode csv" \
         ".read test/schema_expected.sql" \
         ".read test/tests/$test_name.sql" \
         > "$testdir/expected/$test_name.csv"
 
     # Run the test
-    sqlite3 ":memory:" \
-        ".load zig-out/lib/libstanchion" \
+    $sqlite3 ":memory:" \
+        ".load $stanchionlib" \
         ".mode csv" \
         ".read test/schema.sql" \
         ".read test/tests/$test_name.sql" \

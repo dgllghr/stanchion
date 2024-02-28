@@ -26,3 +26,17 @@ When making changes to stanchion, there are a few commands that are useful for t
 * [zig build ext]: build the runtime loadable extension as a dynamic library which can be found in the `zig-out/lib` folder
 
 Once your changes are ready, open a pull requests against the stanchion GitHub repository.
+
+### Test across SQLite versions
+
+By default, tests use the system SQLite library. However, stanchion's build can optionally download and compile a specific version of SQLite and use that version when running tests. Pass `-Dsqlite-test-version=$SQLITE_VERSION` to the build for unit and integration tests. For example:
+
+```
+zig build test -Dsqlite-test-version=3.38.5
+```
+
+It is also possible to launch a SQLite shell for any version of SQLite (a convenience feature for debugging):
+
+```
+zig build sqlite-shell -Dsqlite-test-version=3.43.2
+```

@@ -46,6 +46,24 @@ zig version
 zig fmt --check .
 
 ## Unit tests
-zig build test --summary all
+zig build test -Dsqlite-test-version="$Env:SQLITE_VERSION" --summary all
 
-# TODO run integration test on Windows once the integration test runner supports Windows
+## Integration tests
+
+function Get-SQLiteVersionNumber {
+    param (
+        $versionstring
+    )
+
+    $versionparts = $versionstring -split "\."
+    ([int]$versionparts[0] * 1000000) + ([int]$versionparts[1] * 1000) + [int]$versionparts[2]
+}
+
+# For some unknown reason, stanchion cannot be loaded into sqlite on windows when the sqlite
+# version is < 3.44.0. I have given up trying to figure out why. So for now, only run the
+# integration test if the sqlite version is >= 3.44.0
+$sqliteversionum = Get-SQLiteVersionNumber "$Env:SQLITE_VERSION"
+$minversion = Get-SQLiteVersionNumber "3.44.0"
+if ($sqliteversionnum -ge $minversion) {
+    zig build itest -Dsqlite-test-version="$Env:SQLITE_VERSION" --summary all
+}

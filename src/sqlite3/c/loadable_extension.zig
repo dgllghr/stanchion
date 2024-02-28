@@ -760,7 +760,7 @@ pub export fn sqlite3_filename_journal(zFilename: [*c]const u8) [*c]const u8 {
 pub export fn sqlite3_filename_wal(zFilename: [*c]const u8) [*c]const u8 {
     return sqlite3_api.*.filename_wal.?(zFilename);
 }
-pub export fn sqlite3_create_filename(zDatabase: [*c]const u8, zJournal: [*c]const u8, zWal: [*c]const u8, nParam: c_int, azParam: [*c][*c]const u8) [*c]u8 {
+pub export fn sqlite3_create_filename(zDatabase: [*c]const u8, zJournal: [*c]const u8, zWal: [*c]const u8, nParam: c_int, azParam: [*c][*c]const u8) [*c]const u8 {
     return sqlite3_api.*.create_filename.?(zDatabase, zJournal, zWal, nParam, azParam);
 }
 pub export fn sqlite3_free_filename(p: [*c]u8) void {

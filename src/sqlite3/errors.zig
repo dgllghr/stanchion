@@ -7,6 +7,7 @@ const mem = std.mem;
 const c_wrapper = @import("c.zig");
 const c = c_wrapper.c;
 const encodeVersionNumber = c_wrapper.encodeVersionNumber;
+const headerVersionNumber = c_wrapper.headerVersionNumber;
 const versionNumber = c_wrapper.versionNumber;
 
 pub const SQLiteExtendedIOError = error{
@@ -137,32 +138,38 @@ pub fn errorFromResultCode(code: c_int) Error {
     const sqlite_version = versionNumber();
 
     // These errors are only available since 3.31.0.
-    const version_3_31_0 = encodeVersionNumber(3, 31, 0);
-    if (sqlite_version >= version_3_31_0) {
-        switch (code) {
-            c.SQLITE_CANTOPEN_SYMLINK => return error.SQLiteCantOpenSymlink,
-            c.SQLITE_CONSTRAINT_PINNED => return error.SQLiteConstraintPinned,
-            else => {},
+    const version_3_31_0 = comptime encodeVersionNumber(3, 31, 0);
+    if (comptime headerVersionNumber >= version_3_31_0) {
+        if (sqlite_version >= version_3_31_0) {
+            switch (code) {
+                c.SQLITE_CANTOPEN_SYMLINK => return error.SQLiteCantOpenSymlink,
+                c.SQLITE_CONSTRAINT_PINNED => return error.SQLiteConstraintPinned,
+                else => {},
+            }
         }
     }
 
     // These errors are only available since 3.32.0.
-    const version_3_32_0 = encodeVersionNumber(3, 32, 0);
-    if (sqlite_version >= version_3_32_0) {
-        switch (code) {
-            c.SQLITE_IOERR_DATA => return error.SQLiteIOErrData, // See https://sqlite.org/cksumvfs.html
-            c.SQLITE_BUSY_TIMEOUT => return error.SQLiteBusyTimeout,
-            c.SQLITE_CORRUPT_INDEX => return error.SQLiteCorruptIndex,
-            else => {},
+    const version_3_32_0 = comptime encodeVersionNumber(3, 32, 0);
+    if (comptime headerVersionNumber >= version_3_32_0) {
+        if (sqlite_version >= version_3_32_0) {
+            switch (code) {
+                c.SQLITE_IOERR_DATA => return error.SQLiteIOErrData, // See https://sqlite.org/cksumvfs.html
+                c.SQLITE_BUSY_TIMEOUT => return error.SQLiteBusyTimeout,
+                c.SQLITE_CORRUPT_INDEX => return error.SQLiteCorruptIndex,
+                else => {},
+            }
         }
     }
 
     // These errors are only available since 3.34.0.
-    const version_3_34_0 = encodeVersionNumber(3, 34, 0);
-    if (sqlite_version >= version_3_34_0) {
-        switch (code) {
-            c.SQLITE_IOERR_CORRUPTFS => return error.SQLiteIOErrCorruptFS,
-            else => {},
+    const version_3_34_0 = comptime encodeVersionNumber(3, 34, 0);
+    if (comptime headerVersionNumber >= version_3_34_0) {
+        if (sqlite_version >= version_3_34_0) {
+            switch (code) {
+                c.SQLITE_IOERR_CORRUPTFS => return error.SQLiteIOErrCorruptFS,
+                else => {},
+            }
         }
     }
 

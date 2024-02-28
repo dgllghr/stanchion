@@ -467,21 +467,7 @@ pub fn VirtualTable(comptime Table: type) type {
         }
 
         fn xSync(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
-            const state = @fieldParentPtr(State, "vtab", vtab);
-            var cb_ctx = state.cbCtx() catch {
-                state.setErrorMsg("failed to allocate arena for callback context. out of memory");
-                return c.SQLITE_ERROR;
-            };
-            defer state.reclaimCbCtx(&cb_ctx);
-
-            state.table.sync(&cb_ctx) catch {
-                // There is no point in psasing the error message to SQLite because it does not
-                // appear that the message is sent to the client. Log the error instead.
-                log.err("SYNC failed: {s}", .{cb_ctx.error_message});
-                return c.SQLITE_ERROR;
-            };
-
-            return c.SQLITE_OK;
+            return callTxnCallback("SYNC", Table.sync, .{}, vtab);
         }
 
         fn xCommit(vtab: [*c]c.sqlite3_vtab) callconv(.C) c_int {
