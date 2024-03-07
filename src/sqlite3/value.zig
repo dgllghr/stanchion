@@ -32,7 +32,7 @@ pub const Ref = struct {
         return @intCast(c.sqlite3_value_int(self.value));
     }
 
-    pub fn asI64(self: Self) i62 {
+    pub fn asI64(self: Self) i64 {
         return @intCast(c.sqlite3_value_int64(self.value));
     }
 
