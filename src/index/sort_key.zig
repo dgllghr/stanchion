@@ -90,6 +90,12 @@ fn chooseConstraintBounds(
         if (!constraint.usable()) {
             continue;
         }
+        // Row group elimination only supports binary collation, so disqualify the constraint if
+        // a different collation is required
+        // TODO .rtrim may be useful for row group elimination
+        if (constraint.collation() != .binary) {
+            continue;
+        }
 
         const col_index = constraint.columnIndex();
         const sk_index = mem.indexOfScalar(usize, sort_key_columns, @intCast(col_index));

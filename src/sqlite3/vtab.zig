@@ -1,6 +1,7 @@
 //! This is inspired by [zig-sqlite](https://github.com/vrischmann/zig-sqlite)
 
 const std = @import("std");
+const ascii = std.ascii;
 const debug = std.debug;
 const fmt = std.fmt;
 const heap = std.heap;
@@ -114,6 +115,25 @@ const ArenaPool = struct {
     }
 };
 
+pub const CollationSequence = enum {
+    binary,
+    nocase,
+    rtrim,
+
+    pub fn fromName(name: [:0]const u8) ?CollationSequence {
+        if (ascii.eqlIgnoreCase("BINARY", name)) {
+            return .binary;
+        }
+        if (ascii.eqlIgnoreCase("NOCASE", name)) {
+            return .nocase;
+        }
+        if (ascii.eqlIgnoreCase("RTRIM", name)) {
+            return .rtrim;
+        }
+        return null;
+    }
+};
+
 pub const BestIndexInfo = struct {
     index_info: ?*c.sqlite3_index_info,
 
@@ -195,6 +215,12 @@ pub const BestIndexInfo = struct {
             writer: anytype,
         ) !void {
             try writer.print("{} col {}", .{ self.op(), self.columnIndex() });
+        }
+
+        /// Returns null if the collation sequence is not one of the standard 3 collation sequences
+        pub fn collation(self: Constraint) ?CollationSequence {
+            const name = c.sqlite3_vtab_collation(self.parent.?, @intCast(self.index));
+            return CollationSequence.fromName(mem.span(name));
         }
     };
 
