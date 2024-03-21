@@ -73,8 +73,8 @@ pub const planets = struct {
 
         return [5]MemoryValue{
             .{ .Text = quadrant },
-            .{ .Integer = prng.random().int(i64) },
-            .{ .Integer = prng.random().int(i64) },
+            .{ .Integer = @intCast(prng.random().int(i62)) },
+            .{ .Integer = @intCast(prng.random().int(i62)) },
             .{ .Float = prng.random().float(f64) },
             .{ .Text = "Veridian 3" },
         };

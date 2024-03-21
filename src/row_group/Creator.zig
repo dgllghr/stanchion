@@ -3,6 +3,7 @@ const fmt = std.fmt;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
+const ArrayList = std.ArrayList;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const DynamicBitSetUnmanaged = std.bit_set.DynamicBitSetUnmanaged;
 const Order = std.math.Order;
@@ -46,6 +47,7 @@ blob_manager: *BlobManager,
 row_group_index: *Index,
 pending_inserts: *PendingInserts,
 
+pend_inserts_run: PendingInsertsRun,
 pend_inserts_sk_buf: []MemoryValue,
 /// Stores the order that records go into the row group. True means read from pending inserts,
 /// false from the row group
@@ -79,6 +81,7 @@ pub fn init(
 
     const static_allocator = table_static_arena.allocator();
 
+    const pend_inserts_run = PendingInsertsRun.init(allocator, pending_inserts, columns_len);
     const pend_inserts_sk_buf = try static_allocator.alloc(MemoryValue, schema.sort_key.len);
 
     var interleaving = try DynamicBitSetUnmanaged.initEmpty(
@@ -109,6 +112,7 @@ pub fn init(
         .blob_manager = blob_manager,
         .row_group_index = row_group_index,
         .pending_inserts = pending_inserts,
+        .pend_inserts_run = pend_inserts_run,
         .pend_inserts_sk_buf = pend_inserts_sk_buf,
         .interleaving = interleaving,
         .rowid_seg_blob_handle = undefined,
@@ -125,6 +129,7 @@ pub fn init(
 
 pub fn deinit(self: *Self) void {
     self.src_row_group_cursor.deinit();
+    self.pend_inserts_run.deinit();
 }
 
 pub fn reset(self: *Self) void {
@@ -132,6 +137,7 @@ pub fn reset(self: *Self) void {
     //      always overriden during row group creation
     self.resetOutput();
     self.src_row_group_cursor.reset();
+    self.pend_inserts_run.reset();
 }
 
 fn resetOutput(self: *Self) void {
@@ -215,23 +221,22 @@ fn merge(
     // the candidates cursor does not move for the lifetime of the pending inserts cursor.
     const pend_inserts_start_sk_initial = candidates.pendInsertStartSortKey();
     const pend_inserts_start_rowid_initial = candidates.readPendInsertsStartRowid();
-    var pend_inserts_limit = (num_new_row_groups * self.max_row_group_len) -
+    const pend_inserts_limit = (num_new_row_groups * self.max_row_group_len) -
         self.src_row_group_cursor.row_group.record_count;
-    var pend_inserts_cursor = Limiter(PendingInsertsCursor).init(
-        try self.pending_inserts.cursorFrom(
-            tmp_arena,
-            pend_inserts_start_sk_initial,
-            pend_inserts_start_rowid_initial,
-        ),
-        pend_inserts_limit,
+    var pend_inserts_cur_inner = try self.pending_inserts.cursorFrom(
+        tmp_arena,
+        pend_inserts_start_sk_initial,
+        pend_inserts_start_rowid_initial,
     );
-    defer pend_inserts_cursor.deinit();
+    defer pend_inserts_cur_inner.deinit();
+    _ = try self.pend_inserts_run.load(&pend_inserts_cur_inner, pend_inserts_limit);
+    var pend_inserts_cursor = self.pend_inserts_run.cursor();
 
     // Allocate space for the new row groups
     try new_row_groups.ensureUnusedCapacity(tmp_arena.allocator(), num_new_row_groups);
 
     // Create the row groups
-    for (0..num_new_row_groups) |idx| {
+    for (0..num_new_row_groups) |_| {
         const nrg_idx = new_row_groups.items.len;
         new_row_groups.appendAssumeCapacity(try NewRowGroup.init(
             tmp_arena.allocator(),
@@ -242,56 +247,24 @@ fn merge(
 
         defer self.resetOutput();
         try self.createSingle(tmp_arena, &pend_inserts_cursor, new_row_group);
-        pend_inserts_limit -= pend_inserts_cursor.index;
-
-        // Have the pending inserts cursor start from the current spot so that when it is rewound,
-        // it starts from the proper place for the next row group being created.
-        if (idx < num_new_row_groups - 1) {
-            const curr_sk = pend_inserts_cursor.sortKey(self.sort_key);
-            for (self.pend_inserts_sk_buf, 0..) |*sk_value, sk_idx| {
-                sk_value.* = try MemoryValue.fromRef(
-                    tmp_arena.allocator(),
-                    try curr_sk.readValue(sk_idx),
-                );
-            }
-            const curr_rowid = (try pend_inserts_cursor.readRowid()).asI64();
-
-            std.log.debug(
-                "row group creator: checkpointing pending inserts cursor at {any} {}",
-                .{ self.pend_inserts_sk_buf, curr_rowid },
-            );
-
-            pend_inserts_cursor.deinit();
-
-            pend_inserts_cursor = Limiter(PendingInsertsCursor).init(
-                try self.pending_inserts.cursorFrom(
-                    tmp_arena,
-                    MemoryTuple{ .values = self.pend_inserts_sk_buf },
-                    curr_rowid,
-                ),
-                pend_inserts_limit,
-            );
-        }
     }
 
-    // Delete the pending inserts that went into the row groups
-    if (pend_inserts_cursor.inner().eof()) {
-        // The inner cursor at eof means that the the cursor reached the end of the table, so
-        // delete all the way to the end.
+    // Delete the pending inserts that went into the row groups. If the pending inserts cursor
+    // reached the end of the table, delete all the way to the end. Otherwise, delete until the
+    // upper bound sort key.
+    if (pend_inserts_cur_inner.eof()) {
         try self.pending_inserts.deleteFrom(
             tmp_arena,
             pend_inserts_start_sk_initial,
             pend_inserts_start_rowid_initial,
         );
     } else {
-        // The outer (Limiter) cursor may be eof, but the inner cursor is not. So use the current
-        // row as the upper bound on the delete range.
         try self.pending_inserts.deleteRange(
             tmp_arena,
             pend_inserts_start_sk_initial,
             pend_inserts_start_rowid_initial,
-            pend_inserts_cursor.sortKey(self.sort_key),
-            (try pend_inserts_cursor.readRowid()).asI64(),
+            pend_inserts_cur_inner.sortKey(self.sort_key),
+            (try pend_inserts_cur_inner.readRowid()).asI64(),
         );
     }
 
@@ -319,9 +292,10 @@ fn merge(
 fn createSingle(
     self: *Self,
     tmp_arena: *ArenaAllocator,
-    pending_inserts: *Limiter(PendingInsertsCursor),
+    pending_inserts: *PendingInsertsRun.PICursor,
     new_row_group: *NewRowGroup,
 ) !void {
+    const pi_cursor_start = pending_inserts.index;
     const rg_cursor_start = self.src_row_group_cursor.index;
 
     //
@@ -440,7 +414,7 @@ fn createSingle(
     // Write the data
 
     // Reset the sources back to where they were when creating the single row group started
-    try pending_inserts.rewind();
+    pending_inserts.index = pi_cursor_start;
     self.src_row_group_cursor.reset();
     try self.src_row_group_cursor.skip(rg_cursor_start);
 
@@ -539,57 +513,99 @@ fn compare(sort_key: []const usize, left_row: anytype, right_row: anytype) !Orde
     return std.math.order(left_rowid.asI64(), right_rowid.asI64());
 }
 
-fn Limiter(comptime Cur: type) type {
-    return struct {
-        cur: Cur,
-        limit: u32,
-        index: u32,
+/// A run of pending inserts from which new row groups are created.
+const PendingInsertsRun = struct {
+    pending_inserts: *PendingInserts,
+    col_len: usize,
 
-        const CurLimiter = @This();
+    value_arena: ArenaAllocator,
+    values: ArrayList(MemoryValue),
 
-        pub fn init(cur: Cur, limit: u32) CurLimiter {
-            return .{
-                .cur = cur,
-                .limit = limit,
-                .index = 0,
-            };
+    const SortKey = Index.MergeCandidateCursor.SortKey;
+
+    pub fn init(
+        allocator: Allocator,
+        pending_inserts: *PendingInserts,
+        col_len: usize,
+    ) PendingInsertsRun {
+        const value_arena = ArenaAllocator.init(allocator);
+        const values = ArrayList(MemoryValue).init(allocator);
+        return .{
+            .pending_inserts = pending_inserts,
+            .col_len = col_len,
+            .value_arena = value_arena,
+            .values = values,
+        };
+    }
+
+    pub fn deinit(self: *PendingInsertsRun) void {
+        self.values.deinit();
+        self.value_arena.deinit();
+    }
+
+    pub fn reset(self: *PendingInsertsRun) void {
+        self.values.clearRetainingCapacity();
+        _ = self.value_arena.reset(.retain_capacity);
+    }
+
+    pub fn load(
+        self: *PendingInsertsRun,
+        cur: *PendingInsertsCursor,
+        len: usize,
+    ) !void {
+        self.values.clearRetainingCapacity();
+        try self.values.ensureTotalCapacity(len * (self.col_len + 1));
+        _ = self.value_arena.reset(.retain_capacity);
+
+        var idx: usize = 0;
+        while (!cur.eof() and idx < len) {
+            const rowid = (try cur.readRowid()).asI64();
+            self.values.appendAssumeCapacity(MemoryValue{ .Integer = rowid });
+
+            for (0..self.col_len) |col_idx| {
+                const v = try cur.readValue(col_idx);
+                const mv = try MemoryValue.fromRef(self.value_arena.allocator(), v);
+                self.values.appendAssumeCapacity(mv);
+            }
+
+            try cur.next();
+            idx += 1;
         }
 
-        pub fn deinit(self: *CurLimiter) void {
-            self.cur.deinit();
+        std.debug.assert(cur.eof() or idx == len);
+    }
+
+    pub const PICursor = struct {
+        values: []const MemoryValue,
+        col_len: usize,
+        /// Index of the start of the current row in `values` slice
+        index: usize,
+
+        pub fn eof(self: PICursor) bool {
+            return self.index >= self.values.len;
         }
 
-        pub fn inner(self: *CurLimiter) *Cur {
-            return &self.cur;
+        pub fn next(self: *PICursor) !void {
+            self.index += self.col_len + 1;
         }
 
-        pub fn rewind(self: *CurLimiter) !void {
-            try self.cur.rewind();
-            self.index = 0;
+        pub fn readRowid(self: PICursor) !MemoryValue {
+            return self.values[self.index];
         }
 
-        pub fn eof(self: CurLimiter) bool {
-            return self.cur.eof() or self.index >= self.limit;
-        }
-
-        pub fn next(self: *CurLimiter) !void {
-            try self.cur.next();
-            self.index += 1;
-        }
-
-        pub fn readRowid(self: CurLimiter) !ValueRef {
-            return self.cur.readRowid();
-        }
-
-        pub fn readValue(self: CurLimiter, col_idx: usize) !ValueRef {
-            return self.cur.readValue(col_idx);
-        }
-
-        pub fn sortKey(self: *CurLimiter, sort_key: []const usize) Cur.SortKey {
-            return self.cur.sortKey(sort_key);
+        pub fn readValue(self: PICursor, col_idx: usize) !MemoryValue {
+            return self.values[self.index + 1 + col_idx];
         }
     };
-}
+
+    pub fn cursor(self: PendingInsertsRun) PICursor {
+        return .{
+            .col_len = self.col_len,
+            .values = self.values.items,
+            .index = 0,
+        };
+    }
+};
 
 test "row group: create single from pending inserts" {
     const VtabCtx = @import("../ctx.zig").VtabCtx;
@@ -645,13 +661,19 @@ test "row group: create single from pending inserts" {
         );
         defer creator.deinit();
 
-        var pend_inserts_cursor = Limiter(PendingInsertsCursor).init(
-            try pending_inserts.cursor(&arena),
-            10,
+        var pend_inserts_cur_inner = try pending_inserts.cursor(&arena);
+        defer pend_inserts_cur_inner.deinit();
+        var pend_inserts_run = PendingInsertsRun.init(
+            testing.allocator,
+            &pending_inserts,
+            ctx.schema.columns.len,
         );
-        defer pend_inserts_cursor.deinit();
+        defer pend_inserts_run.deinit();
 
-        _ = try creator.createSingle(&arena, &pend_inserts_cursor, &new_row_group);
+        try pend_inserts_run.load(&pend_inserts_cur_inner, 10);
+        var pend_inserts_run_cur = pend_inserts_run.cursor();
+
+        _ = try creator.createSingle(&arena, &pend_inserts_run_cur, &new_row_group);
     }
 
     var cursor = try Cursor.init(arena.allocator(), &blob_manager, &ctx.schema);
@@ -827,7 +849,7 @@ pub fn benchRowGroupCreate() !void {
     // Create a row group with a merge
 
     try conn.exec("BEGIN");
-    for (0..(row_group_len * 3)) |_| {
+    for (0..(row_group_len * 2)) |_| {
         var row = datasets.planets.randomRecord(&prng);
         _ = try pending_inserts.insert(&arena, rowid, MemoryTuple{ .values = &row });
         rowid += 1;
@@ -855,5 +877,51 @@ pub fn benchRowGroupCreate() !void {
         try conn.exec("COMMIT");
         const end = std.time.microTimestamp();
         std.log.err("create row group: {d} micros", .{end - start});
+    }
+
+    // Create a row group that goes after existing row groups
+
+    {
+        var pi_cursor = try pending_inserts.cursor(&arena);
+        defer pi_cursor.deinit();
+
+        var count: usize = 0;
+        while (!pi_cursor.eof()) {
+            count += 1;
+            try pi_cursor.next();
+        }
+        std.debug.print("PI COUNT {}\n", .{count});
+    }
+
+    try conn.exec("BEGIN");
+    for (0..(row_group_len * 1)) |_| {
+        var row = datasets.planets.randomRecord(&prng);
+        row[0] = .{ .Text = "ZZZ" };
+        _ = try pending_inserts.insert(&arena, rowid, MemoryTuple{ .values = &row });
+        rowid += 1;
+    }
+    try conn.exec("COMMIT");
+
+    {
+        var start: i64 = undefined;
+        {
+            var creator = try Self.init(
+                std.heap.page_allocator,
+                &arena,
+                &blob_manager,
+                &ctx.schema,
+                &row_group_index,
+                &pending_inserts,
+                row_group_len,
+            );
+            defer creator.deinit();
+
+            try conn.exec("BEGIN");
+            start = std.time.microTimestamp();
+            try creator.createAll(&arena);
+        }
+        try conn.exec("COMMIT");
+        const end = std.time.microTimestamp();
+        std.log.err("create row group after existing row groups: {d} micros", .{end - start});
     }
 }
